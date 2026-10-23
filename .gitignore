@@ -1,0 +1,13 @@
+/release/
+/dev/build*/
+/dev/dependencies/
+/dev/runtime/
+/dev/samples/
+/dev/symbols/
+/dev/test-tmp/
+/dev/SDK/*.dll
+/dev/SDK/*.lib
+/dev/settings.ini
+*.pdb
+*.obj
+__pycache__/

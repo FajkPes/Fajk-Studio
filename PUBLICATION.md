@@ -1,0 +1,3 @@
+Preserved R500.1 source archive SHA-256: 934a5c0942839ea4a0d5293c0ab0916972d284a733d05a4154f76acfdb02ce11
+Preserved Windows package SHA-256: 0b1e4314a8f5f927e28b9f24ef087ae6dd6b182f3270f19bf4ad2c60422c720e
+Version: 0.11.500.1

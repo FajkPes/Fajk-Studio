@@ -1,0 +1,198 @@
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Grid x:Name="Header" Margin="16,10,16,8">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel><TextBlock Text="Fajk Studio" FontSize="22" FontWeight="SemiBold"/></StackPanel>
+    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center"><Button x:Name="PanelToggle" Content="Komprese" ToolTipService.ToolTip="Zobrazit / skrýt panel komprese"/><Button x:Name="DebugTab" Content="Debug mód" ToolTipService.ToolTip="Diagnostika paketu a barevných složek"/><Button x:Name="Settings" Content="Nastavení"/></StackPanel>
+  </Grid>
+  <Grid x:Name="Workspace" Grid.Row="1" Margin="16,0,16,0" ColumnSpacing="12">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="300"/><ColumnDefinition Width="*"/><ColumnDefinition Width="0"/></Grid.ColumnDefinitions>
+    <Border x:Name="Sidebar" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8">
+      <Grid><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Padding="12" Spacing="10">
+          <TextBlock Text="1 · Otevřít" Style="{ThemeResource SubtitleTextBlockStyle}"/>
+          <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Button x:Name="Open" Content="Otevřít…" HorizontalAlignment="Stretch" ToolTipService.ToolTip="Obrázek nebo video"/>
+            <Button x:Name="OpenSequence" Grid.Column="1" Content=".fajk…" HorizontalAlignment="Stretch" ToolTipService.ToolTip="Komprimovaný soubor .fajk nebo .fajkv"/>
+          </Grid>
+          <Button x:Name="Attach" Content="Připojit originál pro porovnání…" HorizontalAlignment="Stretch" Visibility="Collapsed"/>
+          <TextBlock x:Name="Source" Text="Vyberte nebo přetáhněte soubor." TextWrapping="Wrap" MaxLines="2" FontSize="12" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          <StackPanel x:Name="CompressionControls" Spacing="10">
+          <TextBlock Text="2 · Kvalita obrazu" Style="{ThemeResource SubtitleTextBlockStyle}" Margin="0,8,0,0"/>
+          <Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <ComboBox x:Name="CodecVersion" Header="Enkodér a dekodér" HorizontalAlignment="Stretch" MinWidth="0" FontSize="12" AutomationProperties.Name="Enkodér a dekodér" ToolTipService.ToolTip="Společná volba CPU/GPU pro kompresi, náhled i přehrávání."/>
+            <Button x:Name="EncoderHelp" Grid.Column="1" Content="?" Width="32" Height="32" Padding="0" ToolTipService.ToolTip="Popis a přehled enkodérů" AutomationProperties.Name="Informace o enkodéru"/>
+          </Grid>
+          <TextBlock x:Name="EncoderSummary" Visibility="Collapsed"/>
+          <ComboBox x:Name="EncodeSpeed" Header="Režim komprese" HorizontalAlignment="Stretch" SelectedIndex="0" AutomationProperties.Name="Režim komprese" ToolTipService.ToolTip="More quality: důkladnější hledání kvality při zvolené velikosti. Fast: výrazně rychlejší komprese, jemné detaily mohou být při stejné velikosti mírně horší. Výběr platí pro fotky i video, nezávisle na CPU/GPU."><ComboBoxItem Content="More quality"/><ComboBoxItem Content="Fast"/></ComboBox>
+          <TextBlock x:Name="ComputeStatus" Visibility="Collapsed" TextWrapping="Wrap" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          <Grid><TextBlock Text="Úroveň kvality"/><TextBlock x:Name="QualityValue" Text="65 / 100" HorizontalAlignment="Right"/></Grid>
+          <Slider x:Name="Quality" Minimum="1" Maximum="100" Value="65" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Kvalita komprese"/>
+          <CheckBox x:Name="AdaptiveQuantizationEnabled" Content="Adaptivní kvantizace" IsChecked="False" ToolTipService.ToolTip="Ve výchozím stavu vypnutá. Vypnutí odstraní místní váhy ploch/hran i místní výběr kvantizačního kroku. Zůstává globální kvantizace podle kvality, barev a pásem; vyhlazení zůstává podle nastavení. Pro porovnání použijte stejnou velikost souboru a vypočítejte náhled. Volba se ukládá pro další spuštění."/>
+          <ComboBox x:Name="ChromaMode" Header="Barevné složky" SelectedIndex="0" HorizontalAlignment="Stretch" ToolTipService.ToolTip="4:2:0: menší barevné složky a nižší cena. 4:4:4: barvy v plném pracovním rozlišení, více dat a výpočtu; při stejném limitu souboru nemusí zlepšit celý obraz."><ComboBoxItem Content="4:2:0 · úsporné barvy"/><ComboBoxItem Content="4:4:4 · plné barevné rozlišení"/><ComboBoxItem Content="4:2:2 · plná svislá barva"/></ComboBox>
+          <ComboBox x:Name="Budget" Header="Velikost jednoho snímku" HorizontalAlignment="Stretch" SelectedIndex="0"><ComboBoxItem Content="Automaticky · podle kvality"/><ComboBoxItem Content="Přibližně 27 kB"/><ComboBoxItem Content="Přibližně 30 kB"/><ComboBoxItem Content="Přibližně 50 kB"/><ComboBoxItem Content="Přibližně 60 kB"/><ComboBoxItem Content="Přibližně 80 kB"/><ComboBoxItem Content="Přibližně 120 kB"/><ComboBoxItem Content="Přibližně 150 kB"/><ComboBoxItem Content="Přibližně 200 kB"/><ComboBoxItem Content="Bez cílové velikosti"/></ComboBox>
+          <TextBlock x:Name="BudgetHint" ToolTipService.ToolTip="Cíl zahrnuje velikost snímku a omezuje dosažitelnou kvalitu. Průhlednost může limit překročit." MaxLines="1" TextTrimming="CharacterEllipsis" Text="Pro 2K: úrovně 1–15 přibližně 20–60 kB, úroveň 100 přibližně 200 kB. Složitý text a průhlednost mohou limit překročit." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          <Expander x:Name="ContourControls" Header="Vyhlazení obrazu" IsExpanded="True" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+            <StackPanel Spacing="4">
+              <StackPanel x:Name="R441Controls" Spacing="4" Visibility="Collapsed">
+                <TextBlock Text="R500 · CPU čištění" FontSize="12" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                <Grid><TextBlock Text="Síla Skirt / dering"/><TextBlock x:Name="R441IntensityValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
+                <Slider x:Name="R441Intensity" Minimum="0" Maximum="200" Value="50" StepFrequency="5" Height="28" AutomationProperties.Name="Síla Skirt / dering" ToolTipService.ToolTip="Hlavní čištění a tvarování kontur. 50 % je výchozí intenzita. Účinek zůstává aktivní i nad 80 kB; 0 % kontury vypne. Vyšší hodnoty mohou změkčit jemnou texturu."/>
+                <Grid><TextBlock Text="Stronger Tangents"/><TextBlock x:Name="StrongerTangentsValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
+                <Slider x:Name="StrongerTangents" Minimum="0" Maximum="100" Value="0" StepFrequency="5" Height="28" AutomationProperties.Name="Stronger Tangents" ToolTipService.ToolTip="Silnější vyhlazování podél kontur. Vyšší hodnoty mohou změkčit jemné detaily."/>
+                  <Grid><TextBlock Text="Doostření hran"/><TextBlock x:Name="R441ContrastValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
+                  <Slider x:Name="R441Contrast" Minimum="0" Maximum="100" Value="0" StepFrequency="5" Height="28" AutomationProperties.Name="Doostření hran" ToolTipService.ToolTip="Omezené doostření přechodů bez překmitu nad okolní barvy. Funguje i při vysoké kvalitě a ukládá se do souboru. 0 % vypnuto."/>
+                <Expander Header="Antialiasing a ochrana textu" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="4">
+                  <ComboBox x:Name="R441Style" Header="Styl čištění" SelectedIndex="0" HorizontalAlignment="Stretch"><ComboBoxItem Content="Skirt · rychlé kontury"/><ComboBoxItem Content="Dering · jemnější kontury"/></ComboBox>
+                  <Grid><TextBlock Text="Antialiasing"/><TextBlock x:Name="R441AntialiasValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
+                  <Slider x:Name="R441Antialias" Minimum="0" Maximum="100" Value="50" StepFrequency="5" Height="28" AutomationProperties.Name="Antialiasing kontur"/>
+                  <CheckBox x:Name="R441ProtectText" Content="Chránit text a jemné UI" IsChecked="False"/>
+                </StackPanel></Expander>
+                <TextBlock x:Name="CleanupHint" Text="Účinek automaticky slábne s vyšší hustotou dat." TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
+              </StackPanel>
+              <Expander Header="Doplňkové čištění" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="4">
+                <TextBlock Text="Výchozí kontury 200 %, plochy vypnuté. Kontury slábnou s vyšší kvalitou, aby zachovaly jemné detaily." TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
+              <Grid><TextBlock Text="Čištění ploch"/><TextBlock x:Name="ContourIntensityValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
+              <Slider x:Name="ContourIntensity" Minimum="0" Maximum="200" Value="0" StepFrequency="5" Height="28" AutomationProperties.Name="Čištění ploch" ToolTipService.ToolTip="Potlačení skvrn, šumu a barevných lemů v podobných barvách. 0 % vypne čištění."/>
+              <StackPanel x:Name="ShapeControls" Spacing="4">
+                <Grid><TextBlock Text="Kontury a tvary"/><TextBlock x:Name="ShapeIntensityValue" Text="200 %" HorizontalAlignment="Right"/></Grid>
+                <Slider x:Name="ShapeIntensity" Minimum="0" Maximum="200" Value="200" StepFrequency="5" Height="28" AutomationProperties.Name="Kontury a tvary" ToolTipService.ToolTip="Plynulejší barevné kontury a tvary. Účinek závisí na zvoleném enkodéru; vyšší hodnoty mohou měnit drobné detaily."/>
+              </StackPanel>
+              </StackPanel></Expander>
+              <TextBlock Text="Po změně vypočítejte náhled." FontSize="11" Opacity="0.7"/>
+            </StackPanel>
+          </Expander>
+
+
+          <Expander x:Name="VideoControls" Header="Video" HorizontalAlignment="Stretch">
+          <StackPanel Spacing="8">
+          <ComboBox x:Name="Every" Header="Při převodu uložit" HorizontalAlignment="Stretch" SelectedIndex="0"><ComboBoxItem Content="Každý snímek"/><ComboBoxItem Content="Každý 2. snímek"/><ComboBoxItem Content="Každý 4. snímek"/><ComboBoxItem Content="Každý 8. snímek"/><ComboBoxItem Content="Každý 16. snímek"/></ComboBox>
+          <ToggleSwitch x:Name="Temporal" Header="Mezisnímková komprese (experimentální)" IsOn="False" OnContent="Přebírání oblastí a rozdíly" OffContent="Každý snímek zvlášť (původní)" ToolTipService.ToolTip="Vypnuto: každý snímek se kóduje samostatně původní cestou. Zapnuto: přebírá nezměněné nebo dost podobné oblasti a kóduje jejich změny. Toleranci i intervaly lze nastavit níže. Nové soubory vyžadují tuto nebo novější verzi dekodéru."/>
+          <NumberBox x:Name="KeyframeInterval" Header="Adaptivní interval keyframu" Minimum="0" Maximum="10000000" Value="120" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="V přesném režimu po tomto počtu uložených snímků změna více než 1 % pixelů vyvolá keyframe; menší změny mohou interval prodloužit. Při kladné toleranci se po intervalu obnoví reference při každé aktualizaci bloků; přibližné přebírání má navíc vlastní limit držení. Velké nebo drahé změny vytvoří keyframe dříve. 0: bez věkového limitu."/>
+          <NumberBox x:Name="SimilarTolerance" Header="Podobné oblasti: tolerance RGB (0–16)" Minimum="0" Maximum="16" Value="0" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="0 vypne přibližné přebírání. Např. 3 dovolí rozdíl nejvýše 3 z 255 v každém RGB kanálu všech pixelů bloku 16×16. Podobný blok ponechá ze staršího obrazu. Alfa musí být shodná. Může potlačit jemný pohyb a změny osvětlení; vyšší číslo může vytvářet duchy."/>
+          <NumberBox x:Name="SimilarHold" Header="Podobné oblasti: podržet nejvýše snímků" Minimum="1" Maximum="120" Value="10" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="Po tolika dalších uložených snímcích se při přibližném přebírání obnoví celá reference, i když je stále podobná. Větší změny se aktualizují okamžitě. Porovnání se vždy vztahuje k původní referenci, takže se malé chyby nesčítají. Přesně shodný obraz může zůstat bez obnovy."/>
+          </StackPanel>
+          </Expander>
+          </StackPanel>
+          <Expander x:Name="AllocationControls" Header="Rozdělení rozpočtu dat" HorizontalAlignment="Stretch"><StackPanel Spacing="8">
+<TextBlock Text="Více dat na tvary a detaily místo hladkých ploch. Celkový limit souboru zůstává stejný." TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Kontrast a tolerance ploch" TextWrapping="Wrap"/><TextBlock Grid.Column="1" x:Name="FlatAllocationValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
+<Slider x:Name="FlatAllocation" Minimum="0" Maximum="100" Value="50" StepFrequency="1" AutomationProperties.Name="Kontrast alokace a úspora ploch" ToolTipService.ToolTip="0 %: více jemné textury v plochách. 50 %: vyšší kontrast mezi plochami a hranami. 100 %: silná úspora uvnitř ploch, více přesnosti na skutečné kontury a větší tolerance podobné textury. Plynulé stínování zůstává; textura může zmizet. Mapa dat stále ukazuje skutečné náklady."/>
+<TextBlock Text="0 % · více detailů i v plochách
+50 % · vyvážené rozdělení
+100 % · větší úspora a tolerance ploch" TextWrapping="Wrap" FontSize="12"/>
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Síla úspory v plochách" TextWrapping="Wrap"/><TextBlock Grid.Column="1" x:Name="FlatSavingsValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
+<Slider x:Name="FlatSavings" Minimum="0" Maximum="100" Value="0" StepFrequency="1" AutomationProperties.Name="Síla úspory v plochách" ToolTipService.ToolTip="Dodatečně potlačí nákladné detaily v rozpoznaných plochách. 0 % ponechá základní AQ, 50 % přidá až 8× vyšší cenu dat v plochách, 100 % až 64×. Chráněné hrany nedostávají tuto penalizaci. Ztráta textury je záměrná; stínování může být jednodušší. Debug porovná úsporu proti této volbě na 0 % při stejném kontrastu a rozpočtu."/>
+<Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Práh pro minimální data" TextWrapping="Wrap"/><TextBlock Grid.Column="1" x:Name="FlatThresholdValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
+<Slider x:Name="FlatThreshold" Minimum="0" Maximum="100" Value="0" StepFrequency="1" AutomationProperties.Name="Práh pro minimální data" ToolTipService.ToolTip="Rozšiřuje úspornou skupinu do smíšených oblastí bez rozpoznané hrany. 0 % zachová základ (nejméně 95 % hladké oblasti); 100 % dovolí přepnutí už od 25 %. Přímá hrana a blízké okolí zůstávají chráněné. Mění skutečné kvantizační ceny, nikoli barvy mapy. Vysoká hodnota může odstranit texturu; minimální data neznamenají nulové hlavičky nebo DC."/>
+<TextBlock Text="V Debugu se mapa i náhled přepočítají automaticky. Bílá označuje oblast pro úsporu, nikoli nulu bitů. Stínování a přechody potřebují data i v hladké ploše. Vyšší hodnota může odstranit jemnou texturu; nejde o vyhlazovací filtr." TextWrapping="Wrap" FontSize="11" Opacity="0.8"/>
+</StackPanel></Expander>
+        </StackPanel>
+      </ScrollViewer>
+      <Border Grid.Row="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,1,0,0" Padding="12,8"><StackPanel Spacing="4">
+        <TextBlock Text="3 · Porovnat a uložit" FontSize="14" FontWeight="SemiBold"/>
+        <Button x:Name="Preview" Content="Vypočítat náhled" HorizontalAlignment="Stretch" IsEnabled="False"/>
+        <TextBlock x:Name="Estimate" Text="Náhled ukáže výsledek před uložením." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <Border x:Name="SizeChangePanel" Visibility="Collapsed" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="6" Padding="8,4"><StackPanel Spacing="0">
+          <TextBlock x:Name="SizeChangeBasis" Visibility="Collapsed" Text="Změna velikosti souboru" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+          <TextBlock x:Name="SizeChange" Text="" TextWrapping="Wrap" FontSize="12" FontWeight="SemiBold"/>
+        </StackPanel></Border>
+        <Button x:Name="Convert" Content="Komprimovat a uložit…" Style="{ThemeResource AccentButtonStyle}" HorizontalAlignment="Stretch" IsEnabled="False"/>
+        <Button x:Name="Cancel" Content="Zrušit převod" HorizontalAlignment="Stretch" Visibility="Collapsed"/>
+        
+      </StackPanel></Border></Grid>
+    </Border>
+    <Border x:Name="DebugSidebar" Grid.Column="2" Visibility="Collapsed" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="8"><ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"><StackPanel Padding="12">
+          <StackPanel x:Name="DebugControls" Spacing="8" >
+            <Grid><TextBlock Text="Debug mód" Style="{ThemeResource SubtitleTextBlockStyle}"/><Button x:Name="DebugClose" Content="✕" HorizontalAlignment="Right" ToolTipService.ToolTip="Zavřít debug panel" AutomationProperties.Name="Zavřít debug panel"/></Grid>
+            <TextBlock Text="Pohledy se načítají automaticky podle výběru. Bez komprimovaného snímku se nejprve vypočítá náhled." TextWrapping="Wrap" FontSize="12"/>
+            <TextBlock Text="Y = jas. C1 a C2 = dvě barevné složky. Jejich AQ mapy ukazují přesnost barev; při 4:2:0 mají větší bloky než jas." TextWrapping="Wrap" FontSize="11" Opacity="0.8"/>
+            <TextBlock Text="Levý pohled"/><Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ComboBox x:Name="DebugLeft" HorizontalAlignment="Stretch" MinWidth="0" ToolTipService.ToolTip="Kolečkem přepínejte pohledy"/><Button x:Name="DebugLeftHelp" Grid.Column="1" Content="?" Width="32" Height="32" Padding="0" ToolTipService.ToolTip="Co pohled zobrazuje a kolik dat zabírá" AutomationProperties.Name="Nápověda levého debug pohledu"/></Grid>
+            <TextBlock Text="Pravý pohled"/><Grid ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><ComboBox x:Name="DebugRight" HorizontalAlignment="Stretch" MinWidth="0" ToolTipService.ToolTip="Kolečkem přepínejte pohledy"/><Button x:Name="DebugRightHelp" Grid.Column="1" Content="?" Width="32" Height="32" Padding="0" ToolTipService.ToolTip="Co pohled zobrazuje a kolik dat zabírá" AutomationProperties.Name="Nápověda pravého debug pohledu"/></Grid>
+            <Grid><TextBlock Text="Zesílení složek"/><TextBlock x:Name="DebugGainValue" Text="1×" HorizontalAlignment="Right"/></Grid>
+            <Slider x:Name="DebugGain" Minimum="1" Maximum="8" Value="1" StepFrequency="1" AutomationProperties.Name="Zesílení diagnostických hodnot"/>
+            <Button x:Name="DebugInspect" Content="Obnovit pohledy" HorizontalAlignment="Stretch"/>
+            <Button x:Name="DebugNormal" Content="Zavřít debug a zobrazit běžný obraz" HorizontalAlignment="Stretch"/>
+            <TextBlock x:Name="DebugCaption" Text="Pohledy se aktualizují automaticky. Kolečko přibližuje v místě kurzoru; tažení posouvá obraz." TextWrapping="Wrap" FontSize="12"/>
+            <TextBlock Text="Šedá 128 = nula barevné složky / rezidua. Koeficienty a zakódované bajty nejsou prostorová mapa obrazu. Analýza nemění soubor ani běžné časy kodeku." TextWrapping="Wrap" FontSize="11" Opacity="0.8"/>
+            <Expander Header="Části paketu · velikosti a offsety" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><TextBox x:Name="DebugReport" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" FontFamily="Consolas" FontSize="11" Height="260" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.VerticalScrollBarVisibility="Auto" Text="Spusťte analýzu."/></Expander>
+<Expander Header="Mapa spotřeby dat" HorizontalAlignment="Stretch"><StackPanel Spacing="6">
+<ComboBox x:Name="DebugBudget" Header="Cílová velikost · společná s kompresí" HorizontalAlignment="Stretch"/>
+<ComboBox x:Name="HeatmapKind" Header="Překryvná mapa" SelectedIndex="0" HorizontalAlignment="Stretch"><ComboBoxItem Content="Spotřeba dat · bity / bpp"/><ComboBoxItem Content="AQ · přesnost jasu"/><ComboBoxItem Content="AQ · přesnost C1"/><ComboBoxItem Content="AQ · přesnost C2"/><ComboBoxItem Content="AQ · hladké plochy"/></ComboBox>
+<Button x:Name="CaptureBudgetMaps" Content="Přepočítat mapy podle rozpočtu" HorizontalAlignment="Stretch"/>
+<TextBlock x:Name="DebugProbe" Text="Přesuňte kurzor nad obraz: bity v buňce, bpp, váhy a zařazení ploch." TextWrapping="Wrap" FontSize="11"/>
+<TextBlock x:Name="FlatSavingsReport" Text="Srovnání úspory se počítá jen v Debugu ze zdrojového obrázku." TextWrapping="Wrap" FontSize="12" ToolTipService.ToolTip="Poslední hotový náhled proti úspoře 0 %, stejné ostatní volby i limit. Odhad detailových bitů ve stejné bílé masce; hlavičky a DC nejsou zahrnuty. Druhý kontrolní encode běží jen v Debugu a není zahrnut do měření kodeku."/>
+<ToggleSwitch x:Name="HeatmapToggle" Header="Mapa spotřeby dat" OffContent="Vypnuto" OnContent="Přes komprimovaný obraz"/>
+<Slider x:Name="HeatmapOpacity" Minimum="10" Maximum="90" Value="55" StepFrequency="5" AutomationProperties.Name="Průhlednost mapy spotřeby dat"/>
+<TextBlock x:Name="HeatmapLegend" Text="Zelená: málo dat · oranžová: více · červená: nejdražší oblasti. Zapněte a vypočítejte náhled." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+</StackPanel></Expander>
+            <TextBlock Text="Debug se při spuštění aplikace vždy vypíná. Vypnutý režim nepořizuje žádná diagnostická data." TextWrapping="Wrap" FontSize="11" Opacity="0.7"/>
+          </StackPanel>
+    </StackPanel></ScrollViewer></Border>
+    <Grid x:Name="Player" Grid.Column="1" Background="#101318" RequestedTheme="Dark">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <Grid Padding="16,12" ColumnSpacing="12">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <StackPanel><TextBlock x:Name="ViewTitle" Text="Přehrávač" FontSize="18" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="ViewState" Text="Otevřete soubor" Foreground="#9DAAB9" FontSize="12" Margin="0,3,0,0"/><TextBlock x:Name="DebugViewLegend" Visibility="Collapsed" TextWrapping="Wrap" MaxLines="5" FontSize="12" Foreground="#C2CBD6" Margin="0,6,0,0"/><TextBlock x:Name="DebugPixelProbe" Visibility="Collapsed" Text="Přejeďte kurzorem nad mapou pro bity, bpp a váhy." FontSize="12" Foreground="#C2CBD6" TextWrapping="Wrap"/></StackPanel>
+        <ComboBox x:Name="ViewMode" Grid.Column="1" SelectedIndex="0" MinWidth="150" AutomationProperties.Name="Zobrazená verze"><ComboBoxItem Content="Originál"/><ComboBoxItem Content="Komprimovaný"/><ComboBoxItem Content="Porovnání ↔"/></ComboBox>
+      </Grid>
+      <Grid x:Name="Stage" Grid.Row="1" Background="#080A0E">
+        <ScrollViewer x:Name="Viewport" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" ZoomMode="Disabled">
+          <Grid x:Name="Surface" Background="Transparent">
+            <Image x:Name="Picture" Stretch="Fill"/>
+<Image x:Name="BudgetOverlay" Stretch="Fill" IsHitTestVisible="False" Visibility="Collapsed"/>
+            <Image x:Name="Reference" Stretch="Fill" IsHitTestVisible="False" Visibility="Collapsed"/>
+            <Border x:Name="Divider" Width="2" Background="White" HorizontalAlignment="Left" IsHitTestVisible="False" Visibility="Collapsed"/>
+          </Grid>
+        </ScrollViewer>
+        <StackPanel x:Name="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="12" Margin="24"><FontIcon Glyph="&#xE714;" FontSize="40" Foreground="#8FA5BF"/><TextBlock Text="Sem patří vaše video nebo obrázek" Foreground="#B8C4D2" TextWrapping="Wrap" TextAlignment="Center"/></StackPanel>
+        <Border x:Name="CompareLeft" Background="#CC101318" Padding="10,5" CornerRadius="4" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="16" Visibility="Collapsed" IsHitTestVisible="False"><TextBlock Text="ORIGINÁL" FontSize="11" FontWeight="SemiBold"/></Border>
+        <Border x:Name="CompareRight" Background="#CC101318" Padding="10,5" CornerRadius="4" HorizontalAlignment="Right" VerticalAlignment="Top" Margin="16" Visibility="Collapsed" IsHitTestVisible="False"><TextBlock Text="KOMPRIMOVANÝ" FontSize="11" FontWeight="SemiBold"/></Border>
+      </Grid>
+      <StackPanel Grid.Row="2" Padding="14,8,14,12" Spacing="8">
+        <Grid x:Name="CompareControls" Visibility="Collapsed" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Porovnání" VerticalAlignment="Center" FontSize="12"/><Slider x:Name="Split" Grid.Column="1" Minimum="0" Maximum="100" Value="50" AutomationProperties.Name="Poloha srovnávací čáry"/></Grid>
+          <Expander x:Name="LegacyFilter" Visibility="Collapsed" Header="Finální ostření · 0–100 %" IsExpanded="False" HorizontalAlignment="Stretch"><StackPanel Spacing="8">
+            <StackPanel x:Name="SmoothingPanel" Spacing="8">
+            <Grid><TextBlock x:Name="FilterName" Text="Vyhlazení bloků"/><TextBlock x:Name="DeblockingValue" Text="100 %" HorizontalAlignment="Right"/></Grid>
+            <Slider x:Name="Deblocking" Minimum="0" Maximum="100" Value="100" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Vyhlazení hran a deblocking, 0 až 100 procent"/>
+            <TextBlock x:Name="FilterHint" Text="Mění pouze zobrazení a export PNG. Změna se zobrazí okamžitě." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+            <StackPanel x:Name="SharpnessPanel" Spacing="8" Visibility="Collapsed">
+              <Grid><TextBlock Text="Finální ostření"/><TextBlock x:Name="SharpeningValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
+              <Slider x:Name="Sharpening" Minimum="0" Maximum="100" Value="50" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Obnova ostrosti"/>
+                <TextBlock Text="Ostří až hotový vyčištěný a zkonturovaný obraz. Síla nezávisí na velikosti souboru. Adaptivní diamantové okolí omezuje lemy a změny barev. 0 % filtr vypne; soubor zůstává stejný." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            </StackPanel>
+          </StackPanel></Expander>
+        <Slider x:Name="Timeline" Minimum="0" Maximum="1" IsEnabled="False" StepFrequency="1" AutomationProperties.Name="Pozice přehrávání"/>
+        <Grid x:Name="PlaybackControls" ColumnSpacing="10">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <Button x:Name="Previous" IsEnabled="False" ToolTipService.ToolTip="Předchozí snímek (←)" AutomationProperties.Name="Předchozí snímek"><FontIcon Glyph="&#xE892;" FontSize="16"/></Button>
+            <Button x:Name="Play" Width="46" Height="38" Style="{ThemeResource AccentButtonStyle}" IsEnabled="False" ToolTipService.ToolTip="Přehrát / pozastavit (mezerník)" AutomationProperties.Name="Přehrát"><FontIcon x:Name="PlayIcon" Glyph="&#xE768;" FontSize="18"/></Button>
+            <Button x:Name="Next" IsEnabled="False" ToolTipService.ToolTip="Další snímek (→)" AutomationProperties.Name="Další snímek"><FontIcon Glyph="&#xE893;" FontSize="16"/></Button>
+          </StackPanel>
+          <TextBlock x:Name="Time" Grid.Column="1" Text="0:00 / 0:00" VerticalAlignment="Center" FontSize="12"/>
+          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+            <Button x:Name="Mute" ToolTipService.ToolTip="Ztlumit (M)" AutomationProperties.Name="Ztlumit zvuk"><FontIcon x:Name="VolumeIcon" Glyph="&#xE767;" FontSize="16"/></Button>
+            <Slider x:Name="Volume" Width="85" Minimum="0" Maximum="100" Value="70" VerticalAlignment="Center" AutomationProperties.Name="Hlasitost"/>
+          </StackPanel>
+        </Grid>
+        <Grid ColumnSpacing="10">
+          <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled"><StackPanel Orientation="Horizontal" Spacing="6">
+            <ComboBox x:Name="Speed" SelectedIndex="1" MinWidth="65" AutomationProperties.Name="Rychlost přehrávání"><ComboBoxItem Content="0,5×"/><ComboBoxItem Content="1×"/><ComboBoxItem Content="2×"/><ComboBoxItem Content="4×"/></ComboBox>
+            <ComboBox x:Name="Step" SelectedIndex="0" MinWidth="115" AutomationProperties.Name="Výběr snímků"><ComboBoxItem Content="Všechny snímky"/><ComboBoxItem Content="Každý 2."/><ComboBoxItem Content="Každý 4."/><ComboBoxItem Content="Každý 8."/><ComboBoxItem Content="Každý 16."/></ComboBox>
+            <Button x:Name="Fit" Content="Přizpůsobit" ToolTipService.ToolTip="Zobrazit celý obraz"/>
+            <Button x:Name="ZoomOut" Content="−" AutomationProperties.Name="Oddálit"/>
+            <Button x:Name="Zoom" Content="100 %" ToolTipService.ToolTip="Skutečná velikost pixelů (1:1)"/>
+            <Button x:Name="ZoomIn" Content="+" AutomationProperties.Name="Přiblížit"/>
+          </StackPanel></ScrollViewer>
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"><Button x:Name="Fullscreen" ToolTipService.ToolTip="Celá obrazovka (F), zpět Esc" AutomationProperties.Name="Celá obrazovka"><FontIcon x:Name="FullscreenIcon" Glyph="&#xE740;" FontSize="16"/></Button><Button x:Name="Export" ToolTipService.ToolTip="Uložit zobrazený snímek jako PNG" AutomationProperties.Name="Uložit snímek"><FontIcon Glyph="&#xE74E;" FontSize="16"/></Button></StackPanel>
+        </Grid>
+        <TextBlock x:Name="AudioState" Text="Bez zvukové stopy" FontSize="11" Foreground="#9DAAB9"/>
+      </StackPanel>
+    </Grid>
+  </Grid>
+  <StackPanel x:Name="Footer" Grid.Row="2" Margin="20,12,20,12" Spacing="8"><InfoBar x:Name="Error" Severity="Error" IsOpen="False" IsClosable="True"/><ProgressBar x:Name="Progress" Minimum="0" Maximum="100" Value="0"/><TextBlock x:Name="Status" Text="Připraveno" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
+</Grid>
