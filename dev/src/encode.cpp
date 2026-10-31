@@ -1,4 +1,5 @@
 #include "codec_internal.hpp"
+#include "coefficient_overrides.hpp"
 #include "decode_internal.hpp"
 #include "wavelet.hpp"
 #include "color_prediction.hpp"
@@ -144,7 +145,8 @@ Packet encodeNativeContent(const Frame& f, EncodeOptions o, bool opaque) {
     // working resolution as density rises; the byte count alone is insufficient.
     const double equivalent=double(target)*double(2560*1440)/(double(f.width)*f.height);
     const double t=std::clamp((equivalent-30000.)/10000.,0.,1.);
-    const double workingScale=(12+t*t*(3-2*t))/16.;
+    const double extra=o.speed==EncodeSpeed::MaxCompression?std::clamp((equivalent-40000.)/20000.,0.,1.):0.;
+    const double workingScale=(12+t*t*(3-2*t)+extra)/16.;
     auto small = resamplePhoto(f, uint32_t(f.width*workingScale+.5), uint32_t(f.height*workingScale+.5), o.threads, {}, 2);
     auto childOptions = o;
     childOptions.targetBytes = target - 28;
@@ -157,8 +159,16 @@ Packet encodeNativeContent(const Frame& f, EncodeOptions o, bool opaque) {
         inner.bytes(7);
         inner.bytes(inner.var());
         const auto at = inner.pos;
-        if (child.data.size() > at + 31 && child.data[at + 4] == 114 && child.data[at + 24] == 8)
+        if (child.data.size() > at + 31 && child.data[at + 4] == 114 && child.data[at + 24] == 8){
+            // This saved cleanup flag does not alter selected coefficients.
+            // Keep the private handoff's exact packet identity in sync with
+            // the wrapper's edit, rather than relaxing identity validation.
+            auto* captured=coefficientEncodeCapture;
+            if(captured&&captured->valid&&captured->nativePacket.size()==child.data.size()-at&&
+               std::equal(child.data.begin()+at,child.data.end(),captured->nativePacket.begin()))
+                captured->nativePacket[25]|=uint8_t(11<<2);
             child.data[at + 25] |= uint8_t(11 << 2);
+        }
     }
     ByteWriter out;
     out.u32(frameMagic);
@@ -194,6 +204,9 @@ Packet encodeFlatContent(const Frame& f, EncodeOptions o, bool opaque) {
         return encodeNativeContent(f, o, opaque);
     o.targetBytes = target - overhead;
     o.automaticTarget = false;
+    // Flat metadata currently has no canonical motion-root representation.
+    // Capturing its nested wavelet would be discarded immediately.
+    ScopedCoefficientEncodeCapture noMotionCapture(nullptr);
     const auto child = encodeNativeContent(f, o, opaque);
     ByteWriter out;
     out.u32(frameMagic);
@@ -262,7 +275,7 @@ Packet encodeBase(const Frame& f, EncodeOptions o, bool opaque) {
 }
 } // namespace
 Packet encodeFrame(const Frame& f, const EncodeOptions& o) {
-    require(o.speed==EncodeSpeed::MoreQuality||o.speed==EncodeSpeed::Fast,"Invalid encode speed mode.");
+    require(o.speed==EncodeSpeed::MoreQuality||fastEncode(o.speed),"Invalid encode speed mode.");
     ScopedComputeBackend compute(o.backend);
     f.validate();
     validate441(o.reconstruction441);
@@ -314,8 +327,8 @@ Packet encodeFrame(const Frame& f, const EncodeOptions& o) {
     out.u16(uint16_t(s.strongerTangents));
     out.u16(uint16_t(s.antialias));
     out.u16(uint16_t(s.contrast));
-    out.u16(uint16_t((s.protectText ? 1 : 0) | (s.style << 1)));
-    out.u16(0);
+    out.u16(uint16_t((s.protectText ? 1 : 0) | (s.style << 1) | (s.fixedIntensity ? 4 : 0)));
+    out.u16(shapeTuningWord(s));
     out.u32(uint32_t(child.data.size()));
     out.bytes(child.data);
     require(!target || out.data.size() <= target, "R441 exceeds target.");

@@ -2,6 +2,7 @@
 #include "../reconstruction441.hpp"
 #include "../frame_time.hpp"
 #include "../frame_pool.hpp"
+#include "../playback_decoder.hpp"
 #include "../cleanup_quality.hpp"
 #include "../output_safety.hpp"
 #include "fajk/codec.hpp"
@@ -69,7 +70,8 @@ std::shared_ptr<fajk::Frame> decodeStudio(FrameCodec& codec, const Packet& packe
                                           uint32_t workers, uint32_t deblocking, uint32_t sharpening) {
     static FramePool frames;
     auto result = frames.acquire(width, height, packet.pts, packet.duration);
-    decodeFrameToBuffer(packet, width, height, workers, deblocking, result->pixels, sharpening, true,codec.backend());
+    codec.setThreads(workers);codec.setDeblocking(deblocking);codec.setSharpening(sharpening);
+    codec.decodeInto(packet,width,height,result->pixels);
     return result;
 }
 bool samePreviewCompression(const EncodeOptions& a, const EncodeOptions& b) {
@@ -125,26 +127,6 @@ struct Result {
     bool legacyFilter = false, colorFilter = false, sharpFilter = false, reusedCompression = false;
     std::wstring error, allocationSavings;
 };
-struct DecodeRequest {
-    Path path, source;
-    uint64_t frame = 0, generation = 0;
-    int64_t pts = 0;
-    ComputeBackend backend=ComputeBackend::Cpu;
-    uint32_t threads = 0;
-    uint64_t memoryMiB = 0, last = 0;
-    uint32_t step = 1, fpsNum = 30, fpsDen = 1;
-    int mode = 1;
-    bool continuous = false;
-    uint32_t deblocking = 100, sharpening = 50;
-};
-struct DecodeResult {
-    uint64_t frame = 0, generation = 0;
-    double ms = 0, decodeMs = -1;
-    uint32_t filter = 100, sharpening = 50;
-    std::shared_ptr<fajk::Frame> image, reference;
-    std::wstring error;
-};
-
 struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
     XamlTypeInfo::XamlControlsXamlMetaDataProvider metadata;
     Window window{nullptr};
@@ -199,24 +181,21 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
     uint32_t renderedWidth = 0, renderedHeight = 0;
     bool renderedOriginal = false, renderedCompressed = false;
 
-    std::jthread job, decoder;
-    std::mutex mutex, decodeMutex;
-    std::condition_variable decodeWake;
+    std::jthread job;
+    std::unique_ptr<PlaybackDecoder> decoder;
+    std::mutex mutex;
     std::condition_variable jobWake;
     std::function<Result(std::stop_token)> pendingJob;
     std::stop_source jobStop;
     bool jobClosing = false;
     std::optional<Result> result;
     std::optional<Progress> progress;
-    std::optional<DecodeRequest> request;
-    std::deque<DecodeResult> decoded;
-    std::atomic<uint64_t> decodeEpoch = 0;
     winrt::event_token renderingToken{};
     bool filterPending = false, filterJob = false;
     std::chrono::steady_clock::time_point filterChanged;
-    bool busy = false, closing = false, decoderClosing = false, playing = false, settingTimeline = false,
+    bool busy = false, closing = false, playing = false, settingTimeline = false,
          fullscreen = false;
-    uint64_t current = 0, requested = UINT64_MAX, generation = 0;
+    uint64_t current = 0, requested = UINT64_MAX, generation = 0, contentRevision = 0;
     int64_t clockBase = 0;
     std::chrono::steady_clock::time_point clockStart;
     uint32_t smokeDeblocking = 100, smokeTargetFilter = 0;
@@ -225,6 +204,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
     uint32_t smokeSharpening = 50, smokeTargetSharp = 0;
     uint32_t smokeSurfaces = 100, smokeContours = 100;
     Reconstruction441 smokeR441;
+    uint32_t smokeR441Intensity=50;
     Path initial;
     bool smokeGpu=false,smokeFast=false;
     bool smokeSpeedChecked=false;
@@ -302,7 +282,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
     }
     EncodeOptions encodeOptions() {
         auto value = options.encode;
-        value.speed=find<ComboBox>(L"EncodeSpeed").SelectedIndex()==1?EncodeSpeed::Fast:EncodeSpeed::MoreQuality;
+        value.speed=EncodeSpeed(std::clamp(find<ComboBox>(L"EncodeSpeed").SelectedIndex(),0,2));
         value.quality = float(find<Slider>(L"Quality").Value());
         value.shapeIntensity = uint32_t(find<Slider>(L"ShapeIntensity").Value());
         value.contourIntensity = uint32_t(find<Slider>(L"ContourIntensity").Value());
@@ -318,7 +298,11 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         value.chroma422 = find<ComboBox>(L"ChromaMode").SelectedIndex() == 2;
         value.threads = options.workers;
         value.lossless = false;
-        value.reconstruction441.intensity = uint32_t(find<Slider>(L"R441Intensity").Value());
+        const bool automaticSkirt=find<CheckBox>(L"R441Automatic").IsChecked().Value();
+        value.reconstruction441.intensity = skirtQualityIntensity(uint32_t(find<Slider>(L"R441Intensity").Value()),value.quality,automaticSkirt);
+        value.reconstruction441.fixedIntensity = !automaticSkirt;
+        value.reconstruction441.shapes.tolerance=uint32_t(find<Slider>(L"ShapeTolerance").Value());
+        value.reconstruction441.shapes.minimumSize=uint32_t(find<Slider>(L"ShapeMinimumSize").Value());
         value.reconstruction441.strongerTangents = uint32_t(find<Slider>(L"StrongerTangents").Value());
         value.reconstruction441.antialias = uint32_t(find<Slider>(L"R441Antialias").Value());
         value.reconstruction441.contrast = uint32_t(find<Slider>(L"R441Contrast").Value());
@@ -352,7 +336,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
     void updateEnabled() {
         for (auto name : {L"Open", L"OpenSequence", L"Settings", L"CodecVersion", L"EncodeSpeed", L"ChromaMode", L"ContourIntensity",
                           L"ShapeIntensity", L"R441Intensity", L"StrongerTangents", L"R441Antialias", L"R441Contrast",
-                          L"R441Style", L"R441ProtectText", L"FlatAllocation", L"FlatSavings", L"FlatThreshold", L"AdaptiveQuantizationEnabled", L"HeatmapToggle", L"Attach"})
+                          L"R441Style", L"R441ProtectText", L"R441Automatic", L"ShapeTolerance", L"ShapeMinimumSize", L"ResetShapeTuning", L"FlatAllocation", L"FlatSavings", L"FlatThreshold", L"AdaptiveQuantizationEnabled", L"HeatmapToggle", L"Attach"})
             find<Control>(name).IsEnabled(!busy);
         find<Slider>(L"FlatAllocation").IsEnabled(!busy &&
             find<CheckBox>(L"AdaptiveQuantizationEnabled").IsChecked().Value());
@@ -364,11 +348,19 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         find<ComboBox>(L"Every").Visibility(sourceVideo() ? Visibility::Visible : Visibility::Collapsed);
         find<ComboBox>(L"Every").IsEnabled(!busy && sourceVideo());
         find<ToggleSwitch>(L"Temporal").IsEnabled(!busy&&sourceVideo());
+        find<ComboBox>(L"TemporalMethod").IsEnabled(!busy&&sourceVideo()&&find<ToggleSwitch>(L"Temporal").IsOn());
         find<NumberBox>(L"KeyframeInterval").IsEnabled(!busy&&sourceVideo()&&find<ToggleSwitch>(L"Temporal").IsOn());
-        for(const auto name:{L"SimilarTolerance",L"SimilarHold"})find<NumberBox>(name).IsEnabled(!busy&&sourceVideo()&&find<ToggleSwitch>(L"Temporal").IsOn());
+        const auto temporalMethod=find<ComboBox>(L"TemporalMethod").SelectedIndex();
+        const bool temporalEnabled=!busy&&sourceVideo()&&find<ToggleSwitch>(L"Temporal").IsOn();
+        for(const auto name:{L"SimilarTolerance",L"SimilarHold"}){
+            find<NumberBox>(name).IsEnabled(temporalEnabled&&temporalMethod==1);
+            find<NumberBox>(name).Visibility(temporalMethod==1?Visibility::Visible:Visibility::Collapsed);
+        }
+        find<NumberBox>(L"MaxTolerance").IsEnabled(temporalEnabled&&temporalMethod==2);
+        find<NumberBox>(L"MaxTolerance").Visibility(temporalMethod==2?Visibility::Visible:Visibility::Collapsed);
         find<Expander>(L"LegacyFilter").Visibility(sharpFilter?Visibility::Visible:Visibility::Collapsed);
         find<Slider>(L"Deblocking").IsEnabled((!busy || filterJob) && (legacyFilter || colorFilter));
-        find<Expander>(L"LegacyFilter").Header(box_value(L"Finální ostření · 0–100 %"));
+        find<Expander>(L"LegacyFilter").Header(box_value(L"Finální ostření · 0–200 %"));
         find<StackPanel>(L"SharpnessPanel").Visibility(sharpFilter ? Visibility::Visible : Visibility::Collapsed);
         find<StackPanel>(L"SmoothingPanel").Visibility(Visibility::Collapsed);
         find<Slider>(L"Sharpening").IsEnabled(sharpFilter && (!busy || filterJob));
@@ -886,16 +878,12 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         stop.request_stop();
     }
     void invalidateDecode() {
-        decodeEpoch = ++generation;
+        ++generation;
         requested = UINT64_MAX;
-        {
-            std::lock_guard lock(decodeMutex);
-            request.reset();
-            decoded.clear();
-        }
-        decodeWake.notify_one();
+        if(decoder)decoder->invalidate(generation);
     }
     void clearSequence() {
+        ++contentRevision;
         budgetMap.reset();
         budgetFrame.reset();
         budgetUploaded.reset();
@@ -1118,10 +1106,13 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         config.autoChroma = false;
         config.every = sourceVideo() ? every(L"Every") : 1;
         config.temporal=sourceVideo()&&find<ToggleSwitch>(L"Temporal").IsOn();
+        config.coefficientTemporal=config.temporal&&find<ComboBox>(L"TemporalMethod").SelectedIndex()==0;
+        config.maxCompressionTemporal=config.temporal&&find<ComboBox>(L"TemporalMethod").SelectedIndex()==2;
         const double keyInterval=find<NumberBox>(L"KeyframeInterval").Value();
         config.keyframeInterval=std::isfinite(keyInterval)?uint32_t(std::clamp(keyInterval,0.,double(maxFrames))):120;
-        const double tolerance=find<NumberBox>(L"SimilarTolerance").Value(),hold=find<NumberBox>(L"SimilarHold").Value();
+        const double tolerance=find<NumberBox>(config.maxCompressionTemporal?L"MaxTolerance":L"SimilarTolerance").Value(),hold=find<NumberBox>(L"SimilarHold").Value();
         config.similarTolerance=std::isfinite(tolerance)?uint32_t(std::clamp(tolerance,0.,16.)):0;
+        if(config.coefficientTemporal)config.similarTolerance=0;
         config.similarHoldFrames=std::isfinite(hold)?uint32_t(std::clamp(hold,1.,120.)):10;
         config.replace = true;
         if (sourceInfo.image && original) {
@@ -1195,118 +1186,8 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         });
     }
     void startDecoder() {
-        decoder = std::jthread([this] {
-            std::unique_ptr<SequenceReader> reader;
-            std::unique_ptr<MediaSource> source;
-            Path sequence, sourceFile;
-            uint64_t activeGeneration = UINT64_MAX;
-            auto codec = makeCodec(CodecId::Fajk);
-            std::shared_ptr<fajk::Frame> last;
-            std::optional<DecodeRequest> next;
-            while (true) {
-                DecodeRequest work;
-                {
-                    std::unique_lock lock(decodeMutex);
-                    decodeWake.wait(lock, [&] {
-                        return decoderClosing || request.has_value() ||
-                               (next && (next->generation != decodeEpoch || decoded.size() < 3));
-                    });
-                    if (decoderClosing)
-                        return;
-                    if (next && next->generation != decodeEpoch)
-                        next.reset();
-                    if (request) {
-                        work = std::move(*request);
-                        request.reset();
-                        decoded.clear();
-                        next.reset();
-                    } else if (next) {
-                        work = *next;
-                        next.reset();
-                    } else
-                        continue;
-                }
-                DecodeResult r;
-                r.frame = work.frame;
-                r.generation = work.generation;
-                r.filter = work.deblocking;
-                r.sharpening = work.sharpening;
-                codec->setComputeBackend(work.backend);
-                codec->setDeblocking(work.deblocking);
-                codec->setSharpening(work.sharpening);
-                try {
-                    auto start = std::chrono::steady_clock::now();
-                    if (activeGeneration != work.generation) {
-                        reader.reset();
-                        source.reset();
-                        last.reset();
-                        sequence.clear();
-                        sourceFile.clear();
-                        activeGeneration = work.generation;
-                    }
-                    int64_t target = work.pts;
-                    if (!work.path.empty()) {
-                        if (sequence != work.path) {
-                            reader = std::make_unique<SequenceReader>(work.path);
-                            sequence = work.path;
-                        }
-                        target = reader->index()[work.frame].pts;
-                        if (work.mode != 0) {
-                            auto packet = reader->read(work.frame);
-                            const auto workers = safeWorkers(reader->info().width, reader->info().height, false,
-                                                             work.threads, work.memoryMiB);
-                            codec->setThreads(workers);
-                            auto decodeStart = std::chrono::steady_clock::now();
-                            r.image = decodeStudio(*codec, packet, reader->info().width, reader->info().height, workers,
-                                                   work.deblocking, work.sharpening);
-                            r.decodeMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
-                                                                                   decodeStart)
-                                             .count();
-                        }
-                    }
-                    if (!work.source.empty() && (work.path.empty() || work.mode != 1)) {
-                        if (sourceFile != work.source) {
-                            source = std::make_unique<MediaSource>(work.source);
-                            sourceFile = work.source;
-                            last.reset();
-                        }
-                        if (!last || target < last->pts || (target >= last->pts && target - last->pts > 10000000)) {
-                            source->seek(target);
-                            last.reset();
-                        }
-                        while (!last || last->pts + std::max<int64_t>(1, last->duration) <= target) {
-                            auto frame = std::make_shared<fajk::Frame>();
-                            if (!source->next(*frame))
-                                break;
-                            last = std::move(frame);
-                        }
-                        fajk::require(bool(last), "Original frame could not be read.");
-                        r.reference = last;
-                        if (!r.image)
-                            r.image = last;
-                    }
-                    r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
-                } catch (std::exception const& e) {
-                    r.error = to_hstring(e.what()).c_str();
-                } catch (...) {
-                    r.error = L"Snímek se nepodařilo načíst.";
-                }
-                std::lock_guard lock(decodeMutex);
-                if (work.generation != decodeEpoch || request)
-                    continue;
-                if (r.error.empty() && work.continuous && work.frame < work.last) {
-                    try {
-                        next = work;
-                        next->frame = std::min(work.last, work.frame + work.step);
-                        next->pts = work.path.empty() ? frameTimestamp(next->frame, work.fpsNum, work.fpsDen) : 0;
-                    } catch (std::exception const& e) {
-                        next.reset();
-                        r.error = to_hstring(e.what()).c_str();
-                    }
-                }
-                decoded.push_back(std::move(r));
-            }
-        });
+        decoder=std::make_unique<PlaybackDecoder>(smoke?executableDirectory()/L"decode-cache-smoke.txt":Path{});
+        decoder->invalidate(generation);
     }
     void requestFrame(uint64_t i) {
         if (!playable() && index.empty())
@@ -1320,6 +1201,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         work.source = sourcePath;
         work.frame = i;
         work.generation = generation;
+        work.contentRevision = contentRevision;
         work.pts = frameTime(i);
         work.threads = options.workers;
         work.memoryMiB = options.memoryMiB;
@@ -1332,11 +1214,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         work.fpsDen = sourceInfo.fpsDen;
         work.mode = find<ComboBox>(L"ViewMode").SelectedIndex();
         work.continuous = playing;
-        {
-            std::lock_guard lock(decodeMutex);
-            request = std::move(work);
-        }
-        decodeWake.notify_one();
+        decoder->submit(std::move(work));
     }
     void stopPlay() {
         if (playing) {
@@ -1451,7 +1329,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             list.MaxWidth(680);
             TextBlock intro;
             intro.Text(
-                L"R500 nabízí společnou volbu CPU nebo GPU pro enkodér, náhled a přehrávání. "
+                L"R600.4 nabízí společnou volbu CPU nebo GPU pro enkodér, náhled a přehrávání. "
                 L"Výchozí Skirt 50 %, kontury 200 %, plochy vypnuté. Doostření hran funguje i při vyšší kvalitě. "
                 L"Rychlá rekonstrukce nahrazuje pomalý referenční filtr. Enkodér vybírá postup podle obsahu a "
                 L"rozpočtu; "
@@ -1500,6 +1378,32 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             error(e.message().c_str());
         }
     }
+    void updateSkirtStrength() {
+        auto settings=encodeOptions();
+        const auto raw=uint32_t(find<Slider>(L"R441Intensity").Value());
+        find<TextBlock>(L"R441IntensityValue").Text(std::to_wstring(raw)+L" %");
+        auto reconstruction=settings.reconstruction441;
+        uint32_t budget=0;
+        bool actual=false;
+        // An old preview must not masquerade as the result of new controls.
+        if(previewPacket&&previewOptions&&original&&previewOriginal.lock()==original&&
+           previewOptions->reconstruction441==reconstruction&&samePreviewCompression(*previewOptions,settings)&&
+           previewPacket->data.size()>=reconstruction441HeaderBytes&&previewPacket->data[4]==reconstruction441Version){
+            const auto stored=read441(previewPacket->data,original->width,original->height);
+            reconstruction=stored.settings;budget=stored.budget;actual=true;
+        }else if(sourceInfo.width&&sourceInfo.height){
+            budget=settings.automaticTarget?qualityTargetBytes(sourceInfo.width,sourceInfo.height,settings.quality):settings.targetBytes;
+        }
+        float amount=std::min(1.f,reconstruction.intensity/100.f);
+        if(budget&&sourceInfo.width&&sourceInfo.height)
+            amount=skirtBlend(reconstruction,cleanupQuality(budget,sourceInfo.width,sourceInfo.height));
+        const bool upperBound=!budget&&!reconstruction.fixedIntensity&&reconstruction.intensity;
+        find<TextBlock>(L"R441ActualValue").Text(std::wstring(actual?L"Použito: ":L"Odhad: ")+
+            (upperBound?L"≤ ":L"")+number(amount*100,1)+L" %");
+        find<TextBlock>(L"CleanupHint").Text(reconstruction.fixedIntensity
+            ?L"Ruční režim: bez automatického útlumu kvalitou i hustotou dat."
+            :L"Automaticky: od kvality 10 slábne, při 50 je Skirt / dering vypnutý. Zohledňuje i hustotu dat.");
+    }
     void settingsChanged() {
         describeEncoder();
         find<TextBlock>(L"QualityValue").Text(std::to_wstring(int(find<Slider>(L"Quality").Value())) + L" / 100");
@@ -1510,18 +1414,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         find<TextBlock>(L"BudgetHint")
             .Text(target ? L"Cíl: " + bytes(target) + L" na snímek."
                          : L"Velikost závisí na obsahu a kvalitě. Pro 2K automatický cíl přibližně 20–200 kB.");
-        std::wstring cleanupHint = L"Kontury zůstávají aktivní i při vyšší hustotě dat.";
-        if (!settings.reconstruction441.intensity)
-            cleanupHint = L"Hlavní čištění vypnuto.";
-        else if (target && sourceInfo.width && sourceInfo.height) {
-            const auto strength = cleanupQuality(target, sourceInfo.width, sourceInfo.height);
-            const int effective =
-                int(std::lround(std::min(1.f, strength.contours * settings.reconstruction441.intensity / 100.f) * 100));
-            cleanupHint = effective
-                              ? L"Odhad síly: " + std::to_wstring(effective) + L" % · automaticky podle hustoty dat."
-                              : L"Při této hustotě dat se hlavní čištění automaticky vynechá.";
-        }
-        find<TextBlock>(L"CleanupHint").Text(cleanupHint);
+        updateSkirtStrength();
         find<TextBlock>(L"Estimate").Text(L"Změna nastavení se projeví po výpočtu nového náhledu.");
         if (debugMode && budgetMap && previewOptions && !samePreviewCompression(*previewOptions, settings))
             find<TextBlock>(L"DebugPixelProbe")
@@ -1534,6 +1427,40 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         updateEnabled();
         saveSettings();
     }
+    void smokeSkirtControls() {
+        const auto quality=find<Slider>(L"Quality").Value();
+        const auto intensity=find<Slider>(L"R441Intensity").Value();
+        const bool automatic=find<CheckBox>(L"R441Automatic").IsChecked().Value();
+        const auto shapes=encodeOptions().reconstruction441.shapes;
+        bool passed=true;
+        find<Slider>(L"R441Intensity").Value(50);
+        find<CheckBox>(L"R441Automatic").IsChecked(true);
+        for(auto [q,expected]:{std::pair{10,50},std::pair{30,25},std::pair{50,0},std::pair{100,0}}){
+            find<Slider>(L"Quality").Value(q);
+            const auto controls=encodeOptions().reconstruction441;
+            passed=passed&&controls.intensity==uint32_t(expected)&&!controls.fixedIntensity;
+        }
+        find<CheckBox>(L"R441Automatic").IsChecked(false);
+        passed=passed&&encodeOptions().reconstruction441.intensity==50&&encodeOptions().reconstruction441.fixedIntensity&&
+            std::wstring(find<TextBlock>(L"R441ActualValue").Text())==L"Odhad: 50.0 %";
+        saveSettings();
+        passed=passed&&GetPrivateProfileIntW(L"Studio",L"r441Intensity",0,settingsPath().c_str())==50&&
+            GetPrivateProfileIntW(L"Studio",L"r441Automatic",1,settingsPath().c_str())==0;
+        find<Slider>(L"ShapeTolerance").Value(175);
+        find<Slider>(L"ShapeMinimumSize").Value(50);
+        passed=passed&&encodeOptions().reconstruction441.shapes==ContourTuning{175,50};
+        find<Slider>(L"ShapeTolerance").Value(100);
+        find<Slider>(L"ShapeMinimumSize").Value(100);
+        passed=passed&&encodeOptions().reconstruction441.shapes==ContourTuning{};
+        find<Slider>(L"Quality").Value(quality);
+        find<Slider>(L"R441Intensity").Value(intensity);
+        find<CheckBox>(L"R441Automatic").IsChecked(automatic);
+        find<Slider>(L"ShapeTolerance").Value(shapes.tolerance);
+        find<Slider>(L"ShapeMinimumSize").Value(shapes.minimumSize);
+        saveSettings();
+        std::ofstream(executableDirectory()/L"ui-smoke.txt",std::ios::app)
+            <<"Skirt quality fade, manual override and raw settings persistence "<<(passed?"PASS":"ERROR")<<'\n';
+    }
     Path settingsPath() { return executableDirectory().parent_path() / L"settings.ini"; }
     void saveSettings() {
         auto path = settingsPath();
@@ -1545,7 +1472,10 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             if (WritePrivateProfileStringW(L"Studio", key, std::to_wstring(v).c_str(), path.c_str()))
                 settingsWritten[key] = v;
         };
-        put(L"r441Intensity", encoded.reconstruction441.intensity);
+        put(L"r441Intensity", uint32_t(find<Slider>(L"R441Intensity").Value()));
+        put(L"r441Automatic", !encoded.reconstruction441.fixedIntensity);
+        put(L"shapeTolerance",encoded.reconstruction441.shapes.tolerance);
+        put(L"shapeMinimumSize",encoded.reconstruction441.shapes.minimumSize);
         put(L"r441Tangents", encoded.reconstruction441.strongerTangents);
         put(L"r441AA", encoded.reconstruction441.antialias);
         put(L"r441Contrast", encoded.reconstruction441.contrast);
@@ -1579,11 +1509,15 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         put(L"encodeBackend",uint32_t(encoded.backend));
         put(L"encodeSpeed",uint32_t(encoded.speed));
         put(L"temporal",find<ToggleSwitch>(L"Temporal").IsOn());
+        put(L"coefficientTemporal",find<ComboBox>(L"TemporalMethod").SelectedIndex()==0);
+        put(L"temporalMethod",uint32_t(std::max(0,find<ComboBox>(L"TemporalMethod").SelectedIndex())));
         const double keyInterval=find<NumberBox>(L"KeyframeInterval").Value();
         put(L"keyframeInterval",std::isfinite(keyInterval)?uint32_t(std::clamp(keyInterval,0.,double(maxFrames))):120);
         const double tolerance=find<NumberBox>(L"SimilarTolerance").Value(),hold=find<NumberBox>(L"SimilarHold").Value();
         put(L"similarTolerance",std::isfinite(tolerance)?uint32_t(std::clamp(tolerance,0.,16.)):0);
         put(L"similarHold",std::isfinite(hold)?uint32_t(std::clamp(hold,1.,120.)):10);
+        const double maxTolerance=find<NumberBox>(L"MaxTolerance").Value();
+        put(L"maxTolerance",std::isfinite(maxTolerance)?uint32_t(std::clamp(maxTolerance,0.,16.)):6);
         put(L"decodeBackend",uint32_t(encoded.backend));
     }
     fire_and_forget settings() {
@@ -1720,19 +1654,13 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         }
         stop.request_stop();
         jobWake.notify_one();
-        {
-            std::lock_guard lock(decodeMutex);
-            decoderClosing = true;
-            request.reset();
-        }
-        decodeWake.notify_one();
+        if(decoder)decoder->shutdown();
         debugWorker.request_stop();
         if (debugWorker.joinable())
             debugWorker.join();
         if (job.joinable())
             job.join();
-        if (decoder.joinable())
-            decoder.join();
+
     }
     ~Studio() { shutdown(); }
     void beginSharpnessSmoke() {
@@ -1742,7 +1670,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
         }
         smokeFiltered = compressed;
         smokeSharpening = sharpening;
-        smokeTargetSharp = sharpening ? 0 : 50;
+        smokeTargetSharp = sharpening == 200 ? 100 : 200;
         SequenceReader reader(sequencePath);
         smokePacket = std::make_shared<Packet>(reader.read(0));
         find<Slider>(L"Sharpening").Value(smokeTargetSharp);
@@ -1854,6 +1782,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     status(L"Debug snímek připraven. Analýza je oddělená od měření kodeku.");
                 }
             } else if (r.kind == Result::Source) {
+                ++contentRevision;
                 invalidateDebug();
                 sourcePath = r.path;
                 sourceInfo = r.media;
@@ -1877,6 +1806,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     previewOriginal = original;
                 }
                 compressed = r.frame;
+                updateSkirtStrength();
                 legacyFilter = r.legacyFilter;
                 colorFilter = r.colorFilter;
                 sharpFilter = r.sharpFilter;
@@ -1908,6 +1838,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                                                 : L"Jeden snímek · RGBA → komprimovaný obraz");
                 status(L"Táhněte srovnávací čáru. Kolečko přibližuje v místě kurzoru, tažení posouvá obraz.");
             } else if (r.kind == Result::Sequence || r.kind == Result::Converted) {
+                ++contentRevision;
                 invalidateDebug();
                 sequencePath = r.path;
                 sequenceInfo = r.sequence;
@@ -1938,6 +1869,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                 requestFrame(0);
                 status(L"Sekvence načtena.");
             } else if (r.kind == Result::Linked) {
+                ++contentRevision;
                 sourcePath = r.path;
                 sourceInfo = r.media;
                 originalFileBytes = r.sourceBytes;
@@ -2191,7 +2123,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                 if(r.error.empty()&&r.kind==Result::Preview&&smokeStage==1&&!smokeSpeedChecked&&sourceInfo.image){
                     smokeSavedSpeed=find<ComboBox>(L"EncodeSpeed").SelectedIndex();
                     smokeSpeedPacket=previewPacket;smokeSpeedFrame=compressed;
-                    find<ComboBox>(L"EncodeSpeed").SelectedIndex(1-smokeSavedSpeed);smokeStage=70;preview();return;
+                    find<ComboBox>(L"EncodeSpeed").SelectedIndex(smokeSavedSpeed==1?0:1);smokeStage=70;preview();return;
                 }
                 if (smokeStage == 1 && r.kind == Result::Preview) {
                     auto versions = find<ComboBox>(L"CodecVersion");
@@ -2213,8 +2145,10 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     auto speedMode=find<ComboBox>(L"EncodeSpeed");const auto savedSpeed=speedMode.SelectedIndex();
                     speedMode.SelectedIndex(1);const bool fastBound=encodeOptions().speed==EncodeSpeed::Fast;
                     speedMode.SelectedIndex(0);const bool qualityBound=encodeOptions().speed==EncodeSpeed::MoreQuality;
+                    speedMode.SelectedIndex(2);const bool maxBound=encodeOptions().speed==EncodeSpeed::MaxCompression;
                     speedMode.SelectedIndex(savedSpeed);
                     log<<"independent Fast / More quality binding "<<(fastBound&&qualityBound?"PASS":"ERROR")<<'\n';
+                    log<<"Fast-based Max compression binding "<<(maxBound?"PASS":"ERROR")<<'\n';
                     auto temporal=find<ToggleSwitch>(L"Temporal");auto interval=find<NumberBox>(L"KeyframeInterval");
                     const auto savedTemporal=temporal.IsOn();const double savedInterval=interval.Value();
                     temporal.IsOn(true);interval.Value(0);saveSettings();
@@ -2223,18 +2157,30 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     const bool intervalSaved=GetPrivateProfileIntW(L"Studio",L"keyframeInterval",0,settingsPath().c_str())==300;
                     temporal.IsOn(savedTemporal);interval.Value(savedInterval);saveSettings();
                     log<<"temporal toggle / adaptive keyframe interval persistence "<<(temporalSaved&&intervalSaved?"PASS":"ERROR")<<'\n';
+                    auto method=find<ComboBox>(L"TemporalMethod");const auto savedMethod=method.SelectedIndex();
+                    method.SelectedIndex(0);saveSettings();const bool coefficientsSaved=GetPrivateProfileIntW(L"Studio",L"coefficientTemporal",0,settingsPath().c_str())==1;
+                    method.SelectedIndex(1);saveSettings();const bool regionsSaved=GetPrivateProfileIntW(L"Studio",L"coefficientTemporal",1,settingsPath().c_str())==0;
+                    method.SelectedIndex(2);saveSettings();const bool maximumSaved=GetPrivateProfileIntW(L"Studio",L"temporalMethod",0,settingsPath().c_str())==2;
+                    method.SelectedIndex(savedMethod);saveSettings();
+                    log<<"coefficient / similar-region / maximum temporal mode persistence "<<(coefficientsSaved&&regionsSaved&&maximumSaved?"PASS":"ERROR")<<'\n';
                     auto tolerance=find<NumberBox>(L"SimilarTolerance"),hold=find<NumberBox>(L"SimilarHold");
                     const double savedTolerance=tolerance.Value(),savedHold=hold.Value();
                     tolerance.Value(3);hold.Value(10);saveSettings();
                     const bool reuseSaved=GetPrivateProfileIntW(L"Studio",L"similarTolerance",0,settingsPath().c_str())==3&&GetPrivateProfileIntW(L"Studio",L"similarHold",0,settingsPath().c_str())==10;
                     tolerance.Value(savedTolerance);hold.Value(savedHold);saveSettings();
                     log<<"similar-region tolerance / hold persistence "<<(reuseSaved?"PASS":"ERROR")<<'\n';
+                    auto maxTolerance=find<NumberBox>(L"MaxTolerance");const double savedMaxTolerance=maxTolerance.Value();
+                    maxTolerance.Value(8);method.SelectedIndex(2);saveSettings();
+                    const bool separateTolerance=GetPrivateProfileIntW(L"Studio",L"maxTolerance",0,settingsPath().c_str())==8&&tolerance.Value()==savedTolerance;
+                    maxTolerance.Value(savedMaxTolerance);method.SelectedIndex(savedMethod);saveSettings();
+                    log<<"separate maximum / region tolerance settings "<<(separateTolerance?"PASS":"ERROR")<<'\n';
                     auto allocation = find<Slider>(L"FlatAllocation");
                     const auto savedAllocation = allocation.Value();
-                    allocation.Value(100);
+                    const auto targetAllocation=savedAllocation==100?0:100;
+                    allocation.Value(targetAllocation);
                     auto selectedOptions = encodeOptions();
                     log << "single allocation control binding "
-                        << (selectedOptions.flatAllocation == 100 &&
+                        << (selectedOptions.flatAllocation == uint32_t(targetAllocation) &&
                                     !samePreviewCompression(selectedOptions, *previewOptions)
                                 ? "PASS"
                                 : "ERROR")
@@ -2253,6 +2199,12 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     encoderHelp();
                 }
                 log << "stage " << smokeStage << " error=" << to_string(r.error) << "\n";
+                if(r.error.empty()&&r.kind==Result::Preview&&r.encodedOptions&&previewPacket&&original){
+                    const auto stored=read441(previewPacket->data,original->width,original->height);
+                    const auto expected=L"Použito: "+number(100*skirtBlend(stored.settings,cleanupQuality(stored.budget,original->width,original->height)),1)+L" %";
+                    log<<"Skirt actual value from encoded packet "
+                       <<(std::wstring(find<TextBlock>(L"R441ActualValue").Text())==expected?"PASS":"ERROR")<<'\n';
+                }
                 if (r.error.empty() && smokeStage == 0) {
                     if (r.kind == Result::Sequence)
                         smokeStage = 10;
@@ -2283,6 +2235,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                             smokePacket = previewPacket;
                             if (true) {
                                 smokeR441 = encodeOptions().reconstruction441;
+                                smokeR441Intensity=uint32_t(find<Slider>(L"R441Intensity").Value());
                                 smokeFiltered = compressed;
                                 smokeSurfaces = encodeOptions().contourIntensity;
                                 smokeContours = encodeOptions().shapeIntensity;
@@ -2387,6 +2340,8 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     if (smokeStage == 63) {
                         name = "intensity";
                         changed = current.intensity != smokeR441.intensity;
+                        if(!current.fixedIntensity&&encodeOptions().quality>=50)
+                            changed=current.intensity==0&&find<Slider>(L"R441Intensity").Value()!=smokeR441Intensity;
                     }
                     if (smokeStage == 64) {
                         name = "text protection";
@@ -2409,10 +2364,10 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                     }
                     if (smokeStage == 62) {
                         find<Slider>(L"R441Contrast").Value(smokeR441.contrast);
-                        find<Slider>(L"R441Intensity").Value(smokeR441.intensity ? 0 : 100);
+                        find<Slider>(L"R441Intensity").Value(smokeR441Intensity ? 0 : 100);
                     }
                     if (smokeStage == 63) {
-                        find<Slider>(L"R441Intensity").Value(smokeR441.intensity);
+                        find<Slider>(L"R441Intensity").Value(smokeR441Intensity);
                         find<CheckBox>(L"R441ProtectText").IsChecked(!smokeR441.protectText);
                     }
                     if (smokeStage == 64) {
@@ -2461,27 +2416,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             }
         }
         const int64_t now = playing ? playbackTime() : 0;
-        std::optional<DecodeResult> frame;
-        {
-            std::lock_guard lock(decodeMutex);
-            while (!decoded.empty()) {
-                auto& candidate = decoded.front();
-                if (candidate.generation != generation) {
-                    decoded.pop_front();
-                    continue;
-                }
-                if (playing && candidate.error.empty() && candidate.image && candidate.image->pts > now)
-                    break;
-                if (smoke && smokeStage == 12 && frame)
-                    ++smokeSkipped;
-                frame = std::move(candidate);
-                decoded.pop_front();
-                if (!playing || !frame->error.empty())
-                    break;
-            }
-        }
-        if (frame)
-            decodeWake.notify_one();
+        auto frame=decoder?decoder->takeDue(generation,playing,now,smoke&&smokeStage==12?&smokeSkipped:nullptr):std::optional<DecodeResult>{};
         if (frame && frame->generation == generation) {
             if (!frame->error.empty()) {
                 stopPlay();
@@ -2517,8 +2452,11 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                 settingTimeline = false;
                 status(L"Snímek " + std::to_wstring(current + 1) + L" / " + (sequencePath.empty() ? L"≈ " : L"") +
                        std::to_wstring(lastFrame() + 1) +
-                       (frame->decodeMs >= 0 ? L" · decode " + number(frame->decodeMs) + L" ms" : L"") +
-                       L" · načtení celkem " + number(frame->ms) + L" ms");
+                       (frame->throughputMs>0&&frame->throughputFrames>=4?
+                            L" · decode průměr " + number(frame->throughputMs) + L" ms/snímek (" + number(1000/frame->throughputMs) + L" snímků/s)":
+                            (frame->lanes>1?std::wstring(L" · decode průměr: měřím…"):std::wstring{})) +
+                       (frame->decodeMs >= 0 ? L" · latence úlohy " + number(frame->decodeMs) + L" ms" : L"") +
+                       (frame->lanes>1?L" · převzetí z fronty ":L" · příprava snímku ") + number(frame->ms) + L" ms");
             }
         }
         if (playing && now >= duration()) {
@@ -2539,6 +2477,12 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             play();
         }
         if (smoke && smokeStage == 12 && std::chrono::steady_clock::now() - smokeStart > std::chrono::seconds(3)) {
+            const std::wstring timingStatus{find<TextBlock>(L"Status").Text()};
+            const bool measured=timingStatus.find(L"decode průměr ")!=std::wstring::npos&&
+                timingStatus.find(L"ms/snímek")!=std::wstring::npos&&timingStatus.find(L"snímků/s")!=std::wstring::npos&&
+                timingStatus.find(L"latence úlohy")!=std::wstring::npos;
+            std::ofstream(executableDirectory()/L"ui-smoke.txt",std::ios::app)
+                <<"measured playback throughput status "<<(measured?"PASS":"ERROR")<<'\n';
             stopPlay();
             std::ofstream(executableDirectory() / L"ui-smoke.txt", std::ios::app)
                 << "playback 3s presented=" << smokePresented << " skipped=" << smokeSkipped << " last=" << current
@@ -2666,6 +2610,13 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                 .SelectedIndex(std::min(1u, GetPrivateProfileIntW(L"Studio", L"r441Style", 0, settingsPath().c_str())));
             find<CheckBox>(L"R441ProtectText")
                 .IsChecked(GetPrivateProfileIntW(L"Studio", L"r441TextProtection", 0, settingsPath().c_str()) != 0);
+            find<CheckBox>(L"R441Automatic")
+                .IsChecked(GetPrivateProfileIntW(L"Studio",L"r441Automatic",1,settingsPath().c_str())!=0);
+            for(auto [name,key]:{std::pair{L"ShapeTolerance",L"shapeTolerance"},std::pair{L"ShapeMinimumSize",L"shapeMinimumSize"}}){
+                const auto value=std::clamp(GetPrivateProfileIntW(L"Studio",key,100,settingsPath().c_str()),25u,200u);
+                find<Slider>(name).Value(value);
+                find<TextBlock>((std::wstring(name)+L"Value").c_str()).Text(std::to_wstring(value)+L" %");
+            }
             for (const auto& entry : encoderCatalog) {
                 ComboBoxItem item;
                 item.Content(box_value(entry.name));
@@ -2674,7 +2625,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             }
             find<ComboBox>(L"CodecVersion").SelectedIndex(0);
             window = Window();
-            window.Title(L"Fajk Studio R500 · CPU / GPU");
+            window.Title(L"Fajk Studio R600.4 · CPU / GPU");
             window.Content(root);
             check_hresult(window.as<IWindowNative>()->get_WindowHandle(&hwnd));
             window.AppWindow().Resize({1440, 940});
@@ -2704,7 +2655,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             }
 
             deblocking=std::min(100u,GetPrivateProfileIntW(L"Studio",L"deblocking",100,path.c_str()));
-            sharpening=std::min(100u,GetPrivateProfileIntW(L"Studio",L"sharpening",0,path.c_str()));
+            sharpening=std::min(200u,GetPrivateProfileIntW(L"Studio",L"sharpening",0,path.c_str()));
             find<Slider>(L"Quality")
                 .Value(std::clamp(GetPrivateProfileIntW(L"Studio", L"quality", 5, path.c_str()), 1u, 100u));
             find<Slider>(L"Volume").Value(
@@ -2718,11 +2669,13 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             }());
             if(smokeGpu){decoderBackend=ComputeBackend::Gpu;find<ComboBox>(L"CodecVersion").SelectedIndex(1);}
             decoderBackend=encodeOptions().backend;
-            find<ComboBox>(L"EncodeSpeed").SelectedIndex(int(std::min(1u,GetPrivateProfileIntW(L"Studio",L"encodeSpeed",uint32_t(options.encode.speed),path.c_str()))));
+            find<ComboBox>(L"EncodeSpeed").SelectedIndex(int(std::min(2u,GetPrivateProfileIntW(L"Studio",L"encodeSpeed",uint32_t(options.encode.speed),path.c_str()))));
             if(smokeFast)find<ComboBox>(L"EncodeSpeed").SelectedIndex(1);
+            find<ComboBox>(L"TemporalMethod").SelectedIndex(std::min(2u,GetPrivateProfileIntW(L"Studio",L"temporalMethod",GetPrivateProfileIntW(L"Studio",L"coefficientTemporal",GetPrivateProfileIntW(L"Studio",L"similarTolerance",0,path.c_str())==0?1:0,path.c_str())?0:1,path.c_str())));
             find<ToggleSwitch>(L"Temporal").IsOn(GetPrivateProfileIntW(L"Studio",L"temporal",0,path.c_str())!=0);
             find<NumberBox>(L"KeyframeInterval").Value(std::min(uint32_t(maxFrames),GetPrivateProfileIntW(L"Studio",L"keyframeInterval",120,path.c_str())));
             find<NumberBox>(L"SimilarTolerance").Value(std::min(16u,GetPrivateProfileIntW(L"Studio",L"similarTolerance",0,path.c_str())));
+            find<NumberBox>(L"MaxTolerance").Value(std::min(16u,GetPrivateProfileIntW(L"Studio",L"maxTolerance",6,path.c_str())));
             find<NumberBox>(L"SimilarHold").Value(std::clamp(GetPrivateProfileIntW(L"Studio",L"similarHold",10,path.c_str()),1u,120u));
             describeEncoder();
             find<ComboBox>(L"ChromaMode")
@@ -3044,6 +2997,14 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             find<ComboBox>(L"R441Style").SelectionChanged([this](auto&&, auto&&) { settingsChanged(); });
             find<CheckBox>(L"R441ProtectText").Checked([this](auto&&, auto&&) { settingsChanged(); });
             find<CheckBox>(L"R441ProtectText").Unchecked([this](auto&&, auto&&) { settingsChanged(); });
+            find<CheckBox>(L"R441Automatic").Checked([this](auto&&,auto&&){settingsChanged();});
+            find<CheckBox>(L"R441Automatic").Unchecked([this](auto&&,auto&&){settingsChanged();});
+            for(auto name:{L"ShapeTolerance",L"ShapeMinimumSize"})
+                find<Slider>(name).ValueChanged([this,name](auto&&,auto const& e){
+                    find<TextBlock>((std::wstring(name)+L"Value").c_str()).Text(std::to_wstring(uint32_t(e.NewValue()))+L" %");
+                    settingsChanged();
+                });
+            bind(L"ResetShapeTuning",[this]{find<Slider>(L"ShapeTolerance").Value(100);find<Slider>(L"ShapeMinimumSize").Value(100);});
             find<CheckBox>(L"AdaptiveQuantizationEnabled").Checked([this](auto&&, auto&&) { settingsChanged(); updateEnabled(); });
             find<CheckBox>(L"AdaptiveQuantizationEnabled").Unchecked([this](auto&&, auto&&) { settingsChanged(); updateEnabled(); });
             bind(L"EncoderHelp", [this] { encoderHelp(); });
@@ -3063,9 +3024,10 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
                 settingsChanged();
             });
             find<ComboBox>(L"Every").SelectionChanged([this](auto&&, auto&&) { settingsChanged(); });
+            find<ComboBox>(L"TemporalMethod").SelectionChanged([this](auto&&,auto&&){saveSettings();updateEnabled();});
             find<ToggleSwitch>(L"Temporal").Toggled([this](auto&&,auto&&){saveSettings();updateEnabled();});
             find<NumberBox>(L"KeyframeInterval").ValueChanged([this](auto&&,auto&&){saveSettings();});
-            for(const auto name:{L"SimilarTolerance",L"SimilarHold"})find<NumberBox>(name).ValueChanged([this](auto&&,auto&&){saveSettings();});
+            for(const auto name:{L"SimilarTolerance",L"SimilarHold",L"MaxTolerance"})find<NumberBox>(name).ValueChanged([this](auto&&,auto&&){saveSettings();});
             find<Slider>(L"Timeline").ValueChanged([this](auto&&, auto const& args) {
                 if (!settingTimeline) {
                     stopPlay();
@@ -3128,6 +3090,7 @@ struct Studio : ApplicationT<Studio, Markup::IXamlMetadataProvider> {
             settingsChanged();
             updateEnabled();
             std::ofstream(executableDirectory() / L"startup-trace.txt", std::ios::app) << "activated\n";
+            if(smoke)smokeSkirtControls();
             if (!initial.empty()) {
                 if (fajkFile(initial))
                     openSequence(initial);

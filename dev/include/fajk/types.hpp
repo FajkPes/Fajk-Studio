@@ -55,14 +55,21 @@ struct BudgetHeatmap {
     std::array<double,3> channelBits{}; // Mapped detail payload; shared headers/DC are separate.
     std::vector<Tile> tiles; // Opt-in entropy costs before footprint distribution.
 };
+struct ContourTuning {
+    uint32_t tolerance=100, minimumSize=100; // Percent of the original color/geometry fit and analysis scale.
+    bool operator==(const ContourTuning&) const = default;
+};
 struct Reconstruction441 {
     uint32_t intensity = 50, strongerTangents = 0, antialias = 50, contrast = 0;
       uint32_t style = 0; // 0: fast Skirt contours; 1: gentler dering contours.
     bool protectText = false;
+    bool fixedIntensity = false; // Bypass automatic coded-density attenuation of Skirt/dering only.
+    ContourTuning shapes;
     bool operator==(const Reconstruction441&) const = default;
 };
 enum class WaveletStage : uint8_t { Final, Pilot };
-enum class EncodeSpeed : uint8_t { MoreQuality, Fast };
+enum class EncodeSpeed : uint8_t { MoreQuality, Fast, MaxCompression };
+inline bool fastEncode(EncodeSpeed speed){return speed==EncodeSpeed::Fast||speed==EncodeSpeed::MaxCompression;}
 struct EncodeOptions {
     ComputeBackend backend = ComputeBackend::Cpu;
     EncodeSpeed speed = EncodeSpeed::MoreQuality;
@@ -111,14 +118,16 @@ struct SequenceInfo {
     uint32_t sourceStep = 1;
     int64_t duration = 0;
     uint64_t count = 0;
-    bool temporal = false; // Version 2: direct keyframe references, no dependency chains.
+    bool temporal = false; // Version 2: direct keyframe references.
+    bool temporalChains = false; // Version 3: bounded coefficient reference chains.
 };
 struct Packet {
     Bytes data;
     int64_t pts = 0, duration = 0;
     uint64_t referenceIndex = UINT64_MAX;
     std::shared_ptr<const Packet> reference; // Resolved by SequenceReader; never serialized inside the payload.
-    std::shared_ptr<const Packet> keyIdentity; // Reader-owned immutable identity for reusing an already decoded key.
+    std::shared_ptr<const Packet> keyIdentity; // Reader-owned immutable identity for cached reconstruction/coefficient state.
+    bool cachePresentation=false; // Reader lookahead: next packet repeats this displayed frame.
 };
 inline void require(bool condition, const char* message) {
     if (!condition)

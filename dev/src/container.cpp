@@ -1,4 +1,5 @@
 #include "fajk/container.hpp"
+#include "temporal_coefficients.hpp"
 #include <windows.h>
 #include <algorithm>
 #include <array>
@@ -27,7 +28,7 @@ Bytes read(std::istream& f, size_t n) {
 }
 Bytes header(const SequenceInfo& i, uint64_t idx, uint32_t indexCrc) {
     Bytes b(headerSize); std::copy(magic.begin(),magic.end(),b.begin());
-    put(b,8,i.temporal?2:1,4); put(b,12,headerSize,4); put(b,16,i.width,4); put(b,20,i.height,4);
+    put(b,8,i.temporalChains?3:i.temporal?2:1,4); put(b,12,headerSize,4); put(b,16,i.width,4); put(b,20,i.height,4);
     put(b,24,i.fpsNum,4); put(b,28,i.fpsDen,4); put(b,32,uint32_t(i.codec),4);
     put(b,36,i.sourceStep,4); put(b,40,i.count,8); put(b,48,idx,8);
     put(b,56,uint64_t(i.duration),8); put(b,64,indexCrc,4);
@@ -82,9 +83,13 @@ void SequenceWriter::append(const Packet& p) {
     require(p.pts>=0 && p.duration>0 && p.pts<=INT64_MAX-p.duration,"Invalid frame timestamp.");
     require(index_.empty() || p.pts>=index_.back().pts+index_.back().duration,"Overlapping frame timestamps.");
     const bool dependent=p.referenceIndex!=UINT64_MAX;
-    require(!dependent||(info_.temporal&&p.referenceIndex<index_.size()&&!index_[size_t(p.referenceIndex)].reference),"Invalid keyframe reference.");
-    require((p.data.size()>4&&(p.data[4]==132||p.data[4]==133))==dependent,"Temporal payload/reference mismatch.");
+    require(!dependent||(info_.temporal&&p.referenceIndex<index_.size()&&
+            ((info_.temporalChains&&p.data.size()>4&&(p.data[4]==coefficientTemporalVersion||p.data[4]==137))||!index_[size_t(p.referenceIndex)].reference)),"Invalid keyframe reference.");
+    const auto depth=dependent?uint32_t(index_[size_t(p.referenceIndex)].dependencyDepth)+1:0;
+    require(depth<=coefficientMaxDepth,"Temporal reference chain exceeds seek bound.");
+    require((p.data.size()>4&&isTemporalPacketVersion(p.data[4]))==dependent,"Temporal payload/reference mismatch.");
     index_.push_back({position_,p.data.size(),p.pts,p.duration,crc32(p.data),dependent?uint32_t(p.referenceIndex+1):0});
+    index_.back().dependencyDepth=uint8_t(depth);
     write(file_,p.data); position_+=p.data.size();
 }
 void SequenceWriter::finish() {
@@ -115,8 +120,8 @@ SequenceReader::SequenceReader(const Path& path):file_(path,std::ios::binary) {
     auto h=fajk::read(file_,headerSize);
     require(std::equal(magic.begin(),magic.end(),h.begin()),"Not a Fajk image/video container. Legacy .fajk2 ZIP files need the original compressor.");
     const auto version=get(h,8,4);
-    require((version==1||version==2) && get(h,12,4)==headerSize,"Unsupported sequence version.");
-    info_.temporal=version==2;
+    require((version==1||version==2||version==3) && get(h,12,4)==headerSize,"Unsupported sequence version.");
+    info_.temporal=version>=2;info_.temporalChains=version==3;
     require(!stillImagePath(path)||!info_.temporal,"A .fajk image cannot use temporal coding.");
     require(get(h,68,4)==crc32(std::span(h).first(68)),"Damaged sequence header.");
     require(std::all_of(h.begin()+72,h.end(),[](uint8_t b){return b==0;}),"Unsupported header flags.");
@@ -139,7 +144,9 @@ SequenceReader::SequenceReader(const Path& path):file_(path,std::ios::binary) {
         require(pts<=INT64_MAX && dur>0 && dur<=uint64_t(INT64_MAX)-pts,"Invalid timestamp.");
         IndexEntry e{get(index,p,8),get(index,p+8,8),int64_t(pts),int64_t(dur),uint32_t(get(index,p+32,4))};
         e.reference=uint32_t(get(index,p+36,4));
-        require((info_.temporal||!e.reference)&&(!e.reference||(e.reference<=n&&!index_[e.reference-1].reference)),"Invalid temporal index reference.");
+        require((info_.temporal||!e.reference)&&(!e.reference||(e.reference<=n&&(info_.temporalChains||!index_[e.reference-1].reference))),"Invalid temporal index reference.");
+        e.dependencyDepth=e.reference?uint8_t(index_[e.reference-1].dependencyDepth+1):0;
+        require(e.dependencyDepth<=coefficientMaxDepth,"Temporal reference chain exceeds seek bound.");
         require(e.offset==next && e.size && e.size<=maxPacket && e.size<=off-next,"Invalid frame bounds.");
         require(e.pts>=lastEnd,"Non-monotonic timestamps.");
         next+=e.size; lastEnd=e.pts+e.duration; index_.push_back(e);
@@ -151,14 +158,28 @@ Packet SequenceReader::read(uint64_t frame) {
     file_.clear(); file_.seekg(std::streamoff(e.offset)); auto data=fajk::read(file_,size_t(e.size));
     require(crc32(data)==e.checksum,"Damaged frame (checksum mismatch).");
     Packet packet{std::move(data),e.pts,e.duration};
-    require((packet.data.size()>4&&(packet.data[4]==132||packet.data[4]==133))==bool(e.reference),"Temporal payload/reference mismatch.");
+    require((packet.data.size()>4&&isTemporalPacketVersion(packet.data[4]))==bool(e.reference),"Temporal payload/reference mismatch.");
     if(e.reference){
         const auto anchor=uint64_t(e.reference-1);
-        if(cachedReferenceIndex_!=anchor){
-            read(anchor); // Also establishes the immutable identity used by key and delta decodes.
+        const bool repeat=info_.temporalChains&&packet.data.size()==8&&(packet.data[4]==coefficientTemporalVersion||packet.data[4]==137)&&packet.data[5]==2;
+        if(repeat&&cachedRepeatIndex_==anchor){packet.reference=cachedRepeatReference_;}
+        else{
+            if(cachedReferenceIndex_!=anchor)read(anchor);
+            packet.reference=cachedReference_;
+            if(repeat){cachedRepeatReference_=packet.reference;cachedRepeatIndex_=anchor;}
         }
-        packet.referenceIndex=anchor;packet.reference=cachedReference_;
-    }else if(info_.temporal){
+        packet.referenceIndex=anchor;
+    }
+    if(info_.temporalChains){
+        // Only a following 8-byte repeat needs a second presentation copy.
+        // Ordinary moving video keeps the existing decoder/cache workload.
+        packet.cachePresentation=frame+1<index_.size()&&index_[size_t(frame+1)].size==8&&index_[size_t(frame+1)].reference==frame+1;
+        if(cachedReferenceIndex_!=frame){cachedReference_=std::make_shared<Packet>(packet);cachedReferenceIndex_=frame;}
+        packet.keyIdentity=cachedReference_;
+        // An explicit seek may recreate an anchor that an old hold cache
+        // still names. Future holds must use the freshly displayed identity.
+        if(cachedRepeatIndex_==frame)cachedRepeatReference_=cachedReference_;
+    }else if(!e.reference&&info_.temporal){
         if(cachedReferenceIndex_!=frame){cachedReference_=std::make_shared<Packet>(packet);cachedReferenceIndex_=frame;}
         packet.keyIdentity=cachedReference_;
     }

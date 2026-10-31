@@ -49,17 +49,17 @@ inline void fitSides(const uint8_t* pixels,uint32_t width,uint32_t height,int cx
         for(int c=0;c<3;++c)g.v[24+side*3+c]=value[c]*trust*confidence;
     }
 }
-inline Guide refined(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,float sideStrength,bool tolerateRinging,int cleaner=0){
+inline Guide refined(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,float sideStrength,bool tolerateRinging,int cleaner=0,ContourTuning tuning={}){
     // Share the exact R437 color/geometry core. Extra cleanup cannot silently
     // change edge placement or diverge when the common analyzer is repaired.
-    const auto base=edgeModel::refined(pixels,width,height,cx,cy,tolerateRinging);
+    const auto base=edgeModel::refined(pixels,width,height,cx,cy,tolerateRinging,tuning);
     Guide guide;std::copy(base.v.begin(),base.v.end(),guide.v.begin());
     fitSides(pixels,width,height,cx,cy,guide,cleaner);
     for(int k=24;k<32;++k)guide.v[k]*=sideStrength;
     return guide;
 }
 
-template<int grid,bool denoise,int cleaner=0> inline void render(uint8_t* pixels,uint32_t width,uint32_t y,const Guide* guides,uint32_t columns,uint32_t rows,float surfaces,float contours) {
+template<int grid,bool denoise,int cleaner=0> inline void render(uint8_t* pixels,uint32_t width,uint32_t y,const Guide* guides,uint32_t columns,uint32_t rows,float surfaces,float contours,ContourTuning tuning={}) {
     thread_local std::vector<Guide> vertical;vertical.resize(columns+1);
     const float fy=(float(y)-grid/2)/grid;const int row=int(std::floor(fy));const float ty=fy-row;
     const auto* a=guides+size_t(std::clamp(row,0,int(rows)-1))*columns;
@@ -159,12 +159,12 @@ template<int grid,bool denoise,int cleaner=0> inline void render(uint8_t* pixels
     }
     _mm256_zeroupper();
 }
-template<int grid,bool denoise,int cleaner=0> inline void restoreGrid(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours) {
+template<int grid,bool denoise,int cleaner=0> inline void restoreGrid(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,ContourTuning tuning={}) {
     if(!surfaces&&!contours)return;
     TimingTimeline timing;const auto columns=(width+grid-1)/grid,rows=(height+grid-1)/grid;
     thread_local std::vector<Guide> cache;cache.resize(size_t(columns)*rows);auto& guides=cache;
     const float sideStrength=sat((surfaces-.1f)*2.5f);
-    parallelFor(rows,workers,[&](uint32_t y){for(uint32_t x=0;x<columns;++x)guides[size_t(y)*columns+x]=refined(pixels.data(),width,height,int(x*grid+grid/2),int(y*grid+grid/2),sideStrength,denoise,cleaner);});
+    parallelFor(rows,workers,[&](uint32_t y){for(uint32_t x=0;x<columns;++x)guides[size_t(y)*columns+x]=refined(pixels.data(),width,height,int(x*grid+grid/2),int(y*grid+grid/2),sideStrength,denoise,cleaner,tuning);});
     // Isolated low-contrast plateaus need spatial context, not an edge label.
     // Fit the surrounding guide planes while excluding the suspect center.
     // A real boundary fails the surrounding affine-consistency test.
@@ -198,14 +198,14 @@ template<int grid,bool denoise,int cleaner=0> inline void restoreGrid(std::span<
     timing.mark("decode.unified385.guide");
     parallelFor((height+15)/16,workers,[&](uint32_t job){for(uint32_t y=job*16;y<std::min(height,(job+1)*16);++y)render<grid,denoise,cleaner>(pixels.data()+size_t(y)*width*4,width,y,guides.data(),columns,rows,surfaces,contours);});timing.mark("decode.unified385.render");
 }
-inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool denoise=false,int cleaner=0){
+inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool denoise=false,int cleaner=0,ContourTuning tuning={}){
     // At zero extra strength the R437 core is exactly the same renderer.
     // Avoid building wider guides and fitting remote colors for a zero delta.
-    if(surfaces<=.1f){edgeModel::restore(pixels,width,height,workers,surfaces,contours,denoise);return;}
+    if(surfaces<=.1f){edgeModel::restore(pixels,width,height,workers,surfaces,contours,denoise,tuning);return;}
     // Weak corrections need fewer overlapping guides, not another algorithm.
-    if(cleaner==1){restoreGrid<8,true,1>(pixels,width,height,workers,surfaces,contours);return;}
-    if(cleaner==2){restoreGrid<8,true,2>(pixels,width,height,workers,surfaces,contours);return;}
-    if(denoise){if(surfaces<.20f&&contours<.45f)restoreGrid<16,true>(pixels,width,height,workers,surfaces,contours);else restoreGrid<8,true>(pixels,width,height,workers,surfaces,contours);}
-    else {if(surfaces<.20f&&contours<.45f)restoreGrid<16,false>(pixels,width,height,workers,surfaces,contours);else restoreGrid<8,false>(pixels,width,height,workers,surfaces,contours);}
+    if(cleaner==1){restoreGrid<8,true,1>(pixels,width,height,workers,surfaces,contours,tuning);return;}
+    if(cleaner==2){restoreGrid<8,true,2>(pixels,width,height,workers,surfaces,contours,tuning);return;}
+    if(denoise){if(surfaces<.20f&&contours<.45f)restoreGrid<16,true>(pixels,width,height,workers,surfaces,contours,tuning);else restoreGrid<8,true>(pixels,width,height,workers,surfaces,contours,tuning);}
+    else {if(surfaces<.20f&&contours<.45f)restoreGrid<16,false>(pixels,width,height,workers,surfaces,contours,tuning);else restoreGrid<8,false>(pixels,width,height,workers,surfaces,contours,tuning);}
 }
 }

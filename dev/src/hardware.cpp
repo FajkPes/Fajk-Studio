@@ -7,7 +7,20 @@
 #include <exception>
 #include <mutex>
 namespace fajk {
-namespace { thread_local uint32_t frameWorkerBudget = 0; }
+namespace { thread_local uint32_t frameWorkerBudget = 0;thread_local SharedWorkerBudget* sharedWorkerBudget=nullptr; }
+SharedWorkerBudget::SharedWorkerBudget(uint32_t totalWorkers,uint32_t callers):available_(totalWorkers>=callers?totalWorkers-callers:0){require(callers>=1&&totalWorkers>=callers,"Invalid shared worker budget.");}
+ScopedSharedWorkerBudget::ScopedSharedWorkerBudget(SharedWorkerBudget* value):previous_(sharedWorkerBudget){sharedWorkerBudget=value;}
+ScopedSharedWorkerBudget::~ScopedSharedWorkerBudget(){sharedWorkerBudget=previous_;}
+class ParallelWorkerLease {
+    SharedWorkerBudget* group_;uint32_t granted_=0;
+public:
+    explicit ParallelWorkerLease(uint32_t requested):group_(sharedWorkerBudget){
+        if(!group_)return;auto available=group_->available_.load(std::memory_order_relaxed);
+        do{granted_=std::min(requested,available);}while(!group_->available_.compare_exchange_weak(available,available-granted_,std::memory_order_relaxed));
+    }
+    ~ParallelWorkerLease(){if(group_)group_->available_.fetch_add(granted_,std::memory_order_relaxed);}
+    uint32_t limit(uint32_t requested)const{return group_?std::min(requested,granted_+1):requested;}
+};
 ScopedWorkerBudget::ScopedWorkerBudget(uint32_t validated):previous_(frameWorkerBudget){
     require(validated>0,"Missing validated worker budget.");
     frameWorkerBudget=previous_?std::min(previous_,validated):validated;
@@ -58,20 +71,21 @@ struct Pool {
     ~Pool(){CloseThreadpool(pool);DestroyThreadpoolEnvironment(&environment);}
 };
 struct Batch {
-    std::atomic<uint32_t> next{0};uint32_t count,chunk,budget;const std::function<void(uint32_t)>& work;
+    std::atomic<uint32_t> next{0};uint32_t count,chunk,budget;SharedWorkerBudget* shared;const std::function<void(uint32_t)>& work;
     std::mutex mutex;std::exception_ptr error;
-    void run() noexcept {try{ScopedWorkerBudget scope(budget);for(;;){auto begin=next.fetch_add(chunk,std::memory_order_relaxed);if(begin>=count)return;for(uint32_t i=begin;i<std::min(count,begin+chunk);++i)work(i);}}catch(...){next.store(count);std::lock_guard lock(mutex);if(!error)error=std::current_exception();}}
+    void run() noexcept {try{ScopedWorkerBudget scope(budget);ScopedSharedWorkerBudget binding(shared);for(;;){auto begin=next.fetch_add(chunk,std::memory_order_relaxed);if(begin>=count)return;for(uint32_t i=begin;i<std::min(count,begin+chunk);++i)work(i);}}catch(...){next.store(count);std::lock_guard lock(mutex);if(!error)error=std::current_exception();}}
 };
 }
 void parallelFor(uint32_t count,uint32_t threads,const std::function<void(uint32_t)>& work){
     if(!count)return;
-    const auto budget=workerLimit(threads),n=std::min(count,budget);
+    const auto budget=workerLimit(threads),wanted=std::min(count,budget);
+    ParallelWorkerLease lease(wanted-1);const auto n=lease.limit(wanted);
     // Each outer participant owns a disjoint share. Nested loops may use that
     // share, never multiply the full frame budget by the number of parents.
     // With only one task the entire requested budget remains available to it.
     const auto share=std::max(1u,budget/n);
     if(n<=1){ScopedWorkerBudget scope(share);for(uint32_t i=0;i<count;++i)work(i);return;}
-    static Pool pool;Batch batch{{0},count,std::clamp(count/(n*8),1u,4u),share,work,{},nullptr};
+    static Pool pool;Batch batch{{0},count,std::clamp(count/(n*8),1u,4u),share,sharedWorkerBudget,work,{},nullptr};
     auto task=CreateThreadpoolWork([](PTP_CALLBACK_INSTANCE,void* context,PTP_WORK){static_cast<Batch*>(context)->run();},&batch,&pool.environment);
     require(task!=nullptr,"Cannot schedule codec workers.");
     for(uint32_t i=1;i<n;++i)SubmitThreadpoolWork(task);batch.run();

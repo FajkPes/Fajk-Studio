@@ -11,7 +11,12 @@
 #include "timing.hpp"
 #include "fajk/compute.hpp"
 #include "temporal.hpp"
+#include "temporal_coefficients.hpp"
+#include "motion_temporal.hpp"
 #include "final_sharpen.hpp"
+#include "decode_session.hpp"
+#include "decode_presentation.hpp"
+#include "gpu_compute.hpp"
 #include <cstring>
 
 namespace fajk {
@@ -56,19 +61,25 @@ Frame decodeLossless(PacketView packet, uint32_t width, uint32_t height, std::sp
         }
     return result;
 }
-Frame dispatchDecode(PacketView, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, std::span<uint8_t>, DeferredUpscale* = nullptr);
+Frame dispatchDecode(PacketView, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, std::span<uint8_t>, DeferredUpscale* = nullptr,DecodePresentation* = nullptr);
 struct TemporalKeyCache {
     std::weak_ptr<const Packet> packet;Frame image;
     uint32_t workers=0,deblocking=0,sharpening=0;ComputeBackend backend=ComputeBackend::Cpu;
+    size_t retainedBytes()const noexcept{return image.pixels.capacity();}
 };
-thread_local TemporalKeyCache temporalKeyCache;
+TemporalKeyCache& temporalKeyCache(){return decodeState<TemporalKeyCache>();}
 void rememberTemporalKey(PacketView packet,std::span<const uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,uint32_t deblocking){
-    if(!packet.keyIdentity||pixels.size()>64*1024*1024)return;
+    if(pixels.size()>64*1024*1024)return;
+    const bool coefficientRepeat=packet.reference&&packet.data.size()==8&&(packet.data[4]==coefficientTemporalVersion||packet.data[4]==motionTemporalVersion)&&packet.data[5]==2;
+    const bool chainFrame=packet.data[4]==coefficientTemporalVersion||packet.data[4]==motionTemporalVersion;
+    if(!coefficientRepeat&&(!packet.keyIdentity||(packet.reference&&(!chainFrame||!packet.cachePresentation))))return;
     // Public C++ callers can mutate their packet copy. Such data must never
     // poison the cache for the reader's different immutable key payload.
-    if(packet.data.size()!=packet.keyIdentity->data.size()||!std::equal(packet.data.begin(),packet.data.end(),packet.keyIdentity->data.begin()))return;
-    auto& cache=temporalKeyCache;cache.image.width=width;cache.image.height=height;cache.image.pts=packet.pts;cache.image.duration=packet.duration;
-    cache.image.pixels.assign(pixels.begin(),pixels.end());cache.packet=packet.keyIdentity;
+    if(!coefficientRepeat&&(packet.reference!=packet.keyIdentity->reference||packet.data.size()!=packet.keyIdentity->data.size()||!std::equal(packet.data.begin(),packet.data.end(),packet.keyIdentity->data.begin())))return;
+    auto& cache=temporalKeyCache();
+    if(coefficientRepeat&&cache.packet.lock()==packet.reference&&cache.image.width==width&&cache.image.height==height&&cache.workers==workers&&cache.deblocking==deblocking&&cache.sharpening==0&&cache.backend==computeBackend())return;
+    cache.image.width=width;cache.image.height=height;cache.image.pts=packet.pts;cache.image.duration=packet.duration;
+    cache.image.pixels.assign(pixels.begin(),pixels.end());cache.packet=coefficientRepeat?packet.reference:packet.keyIdentity;
     cache.workers=workers;cache.deblocking=deblocking;cache.sharpening=0;cache.backend=computeBackend();
 }
 Frame decodeTemporal(PacketView packet,uint32_t width,uint32_t height,uint32_t workers,uint32_t deblocking,uint32_t sharpening,std::span<uint8_t> destination){
@@ -83,7 +94,7 @@ Frame decodeTemporal(PacketView packet,uint32_t width,uint32_t height,uint32_t w
     const uint32_t count=in.u32(),cols=(width+tileSize-1)/tileSize,rows=(height+tileSize-1)/tileSize;
     require(count<=uint64_t(cols)*rows&&count<=(in.data.size()-in.pos)/8,"Invalid temporal tile count.");
     require(packet.reference&&packet.reference->data.size()>=5&&!packet.reference->reference&&packet.reference->referenceIndex==UINT64_MAX&&packet.reference->data[4]!=temporalPacketVersion&&packet.reference->data[4]!=temporalCorrectionVersion,"Missing independent temporal reference.");
-    auto& cache=temporalKeyCache;
+    auto& cache=temporalKeyCache();
     const auto backend=computeBackend();
     const auto previous=cache.packet.lock();
     const bool match=previous==packet.reference&&cache.image.width==width&&cache.image.height==height&&cache.workers==workers&&cache.deblocking==deblocking&&cache.sharpening==sharpening&&cache.backend==backend;
@@ -151,15 +162,25 @@ Frame decodeScaled(PacketView packet, uint32_t width, uint32_t height, uint32_t 
     // invariant from its header before decoding instead of rescanning all RGBA.
     require(nativeBytes.size()>=8&&nativeBytes[4]==114&&(nativeBytes[7]&1)&&hasAvx2(),
             "R441 scaled reconstruction requires opaque AVX2 output.");
-    thread_local Bytes cachedWorking;
+    struct WorkingCache {Bytes pixels;size_t retainedBytes()const noexcept{return pixels.capacity();}};auto& cachedWorking=decodeState<WorkingCache>().pixels;
     Bytes largeWorking;
     auto& working = pixelBytes(iw, ih) <= 32*1024*1024 ? cachedWorking : largeWorking;
     working.resize(pixelBytes(iw, ih));
-    auto low = dispatchDecode({encoded, packet.pts, packet.duration}, iw, ih, workers, deblocking, sharpening, working);
+    GpuDecodedSource decodedSource;
+    const bool retainNative=deferred&&deferred->allowGpuArtifact&&!surfaces&&contours&&uint64_t(iw)*ih>=512*512&&gpuArtifactSupported();
+    Frame low;
+    {ScopedGpuDecodedSource capture(retainNative?&decodedSource:nullptr);
+        low=dispatchDecode({encoded, packet.pts, packet.duration}, iw, ih, workers, deblocking, sharpening, working);}
     low.pixels = std::move(working);
     prepareTextProtection(deferred,low.pixels,iw,ih,workers,budget,surfaces,contours,width,height);
-    if(!deferred||!deferred->skipBaseCleanup)
-        artifactReconstruction::restore(low.pixels, iw, ih, workers, budget, surfaces, contours, width, height);
+    if(!deferred||!deferred->skipBaseCleanup){
+        if(deferred&&deferred->allowGpuArtifact){
+            const auto stamp=decodedSource.pixels==low.pixels.data()&&decodedSource.bytes==low.pixels.size()?decodedSource.stamp:0;
+            deferred->artifact=artifactReconstruction::prepareGpu(low.pixels,iw,ih,workers,budget,surfaces,contours,width,height,stamp,deferred->shapes);
+        }
+        if(!deferred||!deferred->artifact)
+            artifactReconstruction::restore(low.pixels, iw, ih, workers, budget, surfaces, contours, width, height,deferred?deferred->shapes:ContourTuning{});
+    }
     if(deferred&&deferred->protectedText.width)refreshDecodedTextFallback(deferred->protectedText,low.pixels,iw,ih);
     if(deferred){deferred->active=true;deferred->budget=budget;deferred->surfaces=surfaces;deferred->contours=contours;deferred->recycle=&working==&cachedWorking?&cachedWorking:nullptr;return low;}
     auto result = edgeUpscale(low, width, height, workers, destination, std::min(1.f, contours / 100.f), false, false);
@@ -185,13 +206,13 @@ Frame decodeBase(PacketView packet, uint32_t width, uint32_t height, uint32_t wo
         require(hasAvx2(), "R441 reconstruction requires AVX2.");
         prepareTextProtection(deferred,destination.empty()?std::span<const uint8_t>(result.pixels):std::span<const uint8_t>(destination),width,height,workers,budget,surfaces,contours);
         artifactReconstruction::restore(destination.empty() ? std::span(result.pixels) : destination, width, height,
-                                        workers, budget, surfaces, contours);
+                                        workers, budget, surfaces, contours,0,0,deferred?deferred->shapes:ContourTuning{});
         if(deferred&&deferred->protectedText.width)refreshDecodedTextFallback(deferred->protectedText,destination.empty()?std::span<const uint8_t>(result.pixels):std::span<const uint8_t>(destination),width,height);
     }
     return result;
 }
 Frame dispatchDecode(PacketView packet, uint32_t width, uint32_t height, uint32_t threads, uint32_t deblocking,
-                     uint32_t sharpening, std::span<uint8_t> destination, DeferredUpscale* deferred) {
+                     uint32_t sharpening, std::span<uint8_t> destination, DeferredUpscale* deferred,DecodePresentation* presentation) {
     const auto size = pixelBytes(width, height);
     require(destination.empty() || destination.size() == size, "Invalid decode destination.");
     require(deblocking <= 100 && sharpening <= 100 && packet.data.size() <= maxPacket && packet.data.size() >= 5,
@@ -200,6 +221,37 @@ Frame dispatchDecode(PacketView packet, uint32_t width, uint32_t height, uint32_
     // largest image. Recursive wrappers keep it instead of querying RAM again.
     const auto workers = threads;
     switch (packet.data[4]) {
+    case motionTemporalVersion:
+    case coefficientTemporalVersion: {
+        require(!deferred&&packet.reference&&packet.reference->data.size()>4,"Missing coefficient reference.");
+        if(packet.data.size()==8&&packet.data[5]==2){
+            ByteReader in{packet.data};require(in.u32()==frameMagic&&in.u8()==packet.data[4]&&in.u8()==2&&in.u16()==0,"Invalid temporal repeat.");
+            const auto& cache=temporalKeyCache();
+            if(cache.packet.lock()==packet.reference&&cache.image.width==width&&cache.image.height==height&&cache.workers==workers&&cache.deblocking==deblocking&&cache.sharpening==0&&cache.backend==computeBackend()){
+                Frame result{width,height,packet.pts,packet.duration,destination.empty()?cache.image.pixels:Bytes{}};
+                if(!destination.empty())std::copy(cache.image.pixels.begin(),cache.image.pixels.end(),destination.begin());
+                return result;
+            }
+            // A repeat means the same displayed picture, including the
+            // independent/coefficient reconstruction path. Resolving only a
+            // motion root's raw pixels changed key/hold images after a seek.
+            auto ancestor=packet.reference;uint32_t depth=0;
+            while(ancestor&&ancestor->data.size()==8&&ancestor->data[5]==2&&
+                (ancestor->data[4]==motionTemporalVersion||ancestor->data[4]==coefficientTemporalVersion)){
+                require(++depth<coefficientMaxDepth,"Excessive temporal repeat chain.");
+                ByteReader header{ancestor->data};require(header.u32()==frameMagic&&header.u8()==ancestor->data[4]&&header.u8()==2&&header.u16()==0,"Invalid repeated reference.");
+                ancestor=ancestor->reference;
+            }
+            require(bool(ancestor),"Missing repeated reference.");
+            PacketView repeated(*ancestor);repeated.pts=packet.pts;repeated.duration=packet.duration;
+            return dispatchDecode(repeated,width,height,workers,deblocking,sharpening,destination,nullptr,presentation);
+        }
+        if(packet.data[4]==motionTemporalVersion){require(!deferred,"Motion coding is only valid at the outer frame level.");return decodeMotionTemporal(packet,width,height,workers,deblocking,destination,presentation);}
+        auto expanded=prepareCoefficientTemporal(packet.data,packet.reference,workers,packet.keyIdentity);
+        expanded.packet.pts=packet.pts;expanded.packet.duration=packet.duration;
+        ScopedCoefficientBandOverrides override(expanded.coefficients.width?&expanded.coefficients:nullptr);
+        return dispatchDecode(expanded.packet,width,height,workers,deblocking,sharpening,destination,nullptr,presentation);
+    }
     case temporalPacketVersion:
         require(!deferred,"Temporal coding is only valid at the outer frame level.");
         return decodeTemporal(packet,width,height,workers,deblocking,sharpening,destination);
@@ -209,7 +261,9 @@ Frame dispatchDecode(PacketView packet, uint32_t width, uint32_t height, uint32_
     case reconstruction441Version: {
         const auto view = read441(packet.data, width, height);
         DeferredUpscale native;
+        native.shapes=view.settings.shapes;
         native.protectText=view.settings.protectText;
+        native.allowGpuArtifact=!view.settings.protectText&&view.settings.intensity&&computeBackend()==ComputeBackend::Gpu&&uint64_t(width)*height<=4*1024*1024;
         auto frame = dispatchDecode({view.child, packet.pts, packet.duration}, width, height, workers, deblocking,
                                     sharpening, destination,&native);
         if(native.active){
@@ -221,7 +275,7 @@ Frame dispatchDecode(PacketView packet, uint32_t width, uint32_t height, uint32_
             const auto* protectedText=native.protectedText.width?&native.protectedText:nullptr;
             if(disabled&&protectedText)restoreDecodedText(frame.pixels,*protectedText,frame.width,frame.height);
             auto result=disabled?edgeUpscale(frame,width,height,workers,destination,std::min(1.f,native.contours/100.f),false,false)
-                                :fastReconstruct441(frame,width,height,workers,view.budget,view.settings,destination,flat?&*flat:nullptr,protectedText);
+                                :fastReconstruct441(frame,width,height,workers,view.budget,view.settings,destination,flat?&*flat:nullptr,protectedText,flat?nullptr:presentation,native.artifact.get());
             if(disabled&&(view.settings.antialias||view.settings.contrast))
                 reconstruct441(destination.empty()?std::span(result.pixels):destination,width,height,workers,view.budget,view.settings);
             if(native.recycle)*native.recycle=std::move(frame.pixels);
@@ -263,20 +317,24 @@ Frame decodeFrameWithSettings(PacketView packet, uint32_t width, uint32_t height
                               uint32_t sharpening, bool,ComputeBackend backend) {
     ScopedComputeBackend compute(backend);
     threads=safeWorkers(width,height,false,threads);ScopedWorkerBudget scope(threads);
-    require(sharpening<=100,"Invalid sharpening strength.");
-    auto result=dispatchDecode(packet, width, height, threads, deblocking, 0, {});
-    rememberTemporalKey(packet,result.pixels,width,height,threads,deblocking);
-    finalSharpen(result.pixels,width,height,threads,sharpening);return result;
+    require(sharpening<=200,"Invalid sharpening strength.");
+    const bool fuse=packet.reference&&!packet.cachePresentation&&packet.data.size()>5&&packet.data[5]!=2&&
+        (packet.data[4]==coefficientTemporalVersion||packet.data[4]==motionTemporalVersion);
+    DecodePresentation presentation{fuse?sharpening:0};
+    auto result=dispatchDecode(packet, width, height, threads, deblocking, 0, {},nullptr,&presentation);
+    if(!presentation.applied){rememberTemporalKey(packet,result.pixels,width,height,threads,deblocking);finalSharpen(result.pixels,width,height,threads,sharpening);}return result;
 }
 void decodeFrameToBuffer(PacketView packet, uint32_t width, uint32_t height, uint32_t threads, uint32_t deblocking,
                          std::span<uint8_t> destination, uint32_t sharpening, bool,ComputeBackend backend) {
     ScopedComputeBackend compute(backend);
     require(destination.size() == pixelBytes(width, height), "Invalid decode destination.");
     threads=safeWorkers(width,height,false,threads);ScopedWorkerBudget scope(threads);
-    require(sharpening<=100,"Invalid sharpening strength.");
-    dispatchDecode(packet, width, height, threads, deblocking, 0, destination);
-    rememberTemporalKey(packet,destination,width,height,threads,deblocking);
-    finalSharpen(destination,width,height,threads,sharpening);
+    require(sharpening<=200,"Invalid sharpening strength.");
+    const bool fuse=packet.reference&&!packet.cachePresentation&&packet.data.size()>5&&packet.data[5]!=2&&
+        (packet.data[4]==coefficientTemporalVersion||packet.data[4]==motionTemporalVersion);
+    DecodePresentation presentation{fuse?sharpening:0};
+    dispatchDecode(packet, width, height, threads, deblocking, 0, destination,nullptr,&presentation);
+    if(!presentation.applied){rememberTemporalKey(packet,destination,width,height,threads,deblocking);finalSharpen(destination,width,height,threads,sharpening);}
 }
 Frame decodeFrameWithThreads(const Packet& packet, uint32_t width, uint32_t height, uint32_t threads) {
     return decodeFrameWithSettings(packet, width, height, threads, 100);

@@ -14,10 +14,11 @@ inline float sat(float x) { return std::clamp(x,0.f,1.f); }
 inline float sum8(__m256 value) { auto v=_mm_add_ps(_mm256_castps256_ps128(value),_mm256_extractf128_ps(value,1));v=_mm_hadd_ps(v,v);v=_mm_hadd_ps(v,v);return _mm_cvtss_f32(v); }
 inline float minimum8(__m256 value){auto v=_mm_min_ps(_mm256_castps256_ps128(value),_mm256_extractf128_ps(value,1));v=_mm_min_ps(v,_mm_movehl_ps(v,v));return _mm_cvtss_f32(_mm_min_ss(v,_mm_shuffle_ps(v,v,1)));}
 inline float maximum8(__m256 value){auto v=_mm_max_ps(_mm256_castps256_ps128(value),_mm256_extractf128_ps(value,1));v=_mm_max_ps(v,_mm_movehl_ps(v,v));return _mm_cvtss_f32(_mm_max_ss(v,_mm_shuffle_ps(v,v,1)));}
-template<bool diagnostic=false> inline Guide analyze(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,int step=4,bool tolerant=false,AnalysisDebug* debug=nullptr) {
+template<bool diagnostic=false> inline Guide analyze(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,int step=4,bool tolerant=false,AnalysisDebug* debug=nullptr,ContourTuning tuning={}) {
     if constexpr(diagnostic)*debug={};
     alignas(32) float sample[3][16];
     const float scale=step*.25f;
+    const float centerX=cx+.5f+(step&1?.5f:0.f),centerY=cy+.5f+(step&1?.5f:0.f);
     const auto wx=_mm256_mul_ps(_mm256_setr_ps(-6,-2,2,6,-6,-2,2,6),_mm256_set1_ps(scale));
     const __m256 wy[2]={_mm256_mul_ps(_mm256_setr_ps(-6,-6,-6,-6,-2,-2,-2,-2),_mm256_set1_ps(scale)),_mm256_mul_ps(_mm256_setr_ps(2,2,2,2,6,6,6,6),_mm256_set1_ps(scale))};
     uint32_t uniformColor=0;bool uniform=true;
@@ -45,7 +46,7 @@ template<bool diagnostic=false> inline Guide analyze(const uint8_t* pixels,uint3
     }
     Guide guide;guide.v[10]=sat((64-planeError)/56);
     for(int c=0;c<3;++c)if(sx[c]!=0||sy[c]!=0)guide.v[22]=1;
-    for(int c=0;c<3;++c) { guide.v[11+c]=(mean[c]-sx[c]*(cx+.5f)-sy[c]*(cy+.5f))*guide.v[10];guide.v[14+c]=sx[c]*guide.v[10];guide.v[17+c]=sy[c]*guide.v[10]; }
+    for(int c=0;c<3;++c) { guide.v[11+c]=(mean[c]-sx[c]*centerX-sy[c]*centerY)*guide.v[10];guide.v[14+c]=sx[c]*guide.v[10];guide.v[17+c]=sy[c]*guide.v[10]; }
     const float noiseFloor=tolerant?1.5f:3.f;
     if constexpr(diagnostic)debug->planeError=planeError;
     if(planeError<noiseFloor){if constexpr(diagnostic)debug->reason=3;return guide;}
@@ -79,14 +80,15 @@ template<bool diagnostic=false> inline Guide analyze(const uint8_t* pixels,uint3
     // Colored silhouettes commonly contain shading and compression spill.
     // Allow that residual without relaxing neutral text/stroke protection.
     const float tolerance=.02f+.025f*chromatic;
-    const float allowance=16+energy*tolerance;
-    const float fit=std::max(sat((allowance-error)/(12+energy*(tolerance-.005f))),chromatic*.4f*allowance/(allowance+error));
+    const float fitScale=tuning.tolerance/100.f;
+    const float allowance=(16+energy*tolerance)*fitScale;
+    const float fit=std::max(sat((allowance-error)/((12+energy*(tolerance-.005f))*fitScale)),chromatic*.4f*allowance/(allowance+error));
     const float confidence=sat((energy-minimumEnergy)/(tolerant?900.f:1200.f))*fit*sat((planeError-noiseFloor)/25);
     guide.v[20]=confidence*(crossings>=2?sat((5.f-wrong)/3)*sat((16-variance)/12):0);
     guide.v[0]=confidence;
     for(int c=0;c<3;++c) { guide.v[1+c]=a[c]*confidence;guide.v[4+c]=b[c]*confidence; }
     guide.v[7]=nx*confidence;guide.v[8]=ny*confidence;
-    guide.v[9]=(-nx*(cx+.5f)-ny*(cy+.5f)-offset)*confidence;
+    guide.v[9]=(-nx*centerX-ny*centerY-offset)*confidence;
     return guide;
 }
 inline void orientInPlace(const Guide& reference,Guide& other){
@@ -104,7 +106,7 @@ inline Guide contourOnly(Guide g){
     g.v[0]=g.v[20];g.v[21]*=g.v[20];
     return g;
 }
-template<bool diagnostic=false> inline Guide locateCrossings(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,Guide guide,bool tolerateRinging=false,LocationDebug* debug=nullptr){
+template<bool diagnostic=false> inline Guide locateCrossings(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,Guide guide,bool tolerateRinging=false,LocationDebug* debug=nullptr,ContourTuning tuning={}){
     if constexpr(diagnostic)*debug={};
     if(guide.v[0]<.03f){if constexpr(diagnostic)debug->reason=1;return guide;}
     const float confidence=guide.v[0],nx=guide.v[7]/confidence,ny=guide.v[8]/confidence,intercept=guide.v[9]/confidence;
@@ -159,21 +161,21 @@ template<bool diagnostic=false> inline Guide locateCrossings(const uint8_t* pixe
     const float newNx=horizontal?scale:-slope*scale,newNy=horizontal?-slope*scale:scale;
     const float newIntercept=horizontal?-newNx*center-newNy*(cy+.5f):-newNy*center-newNx*(cx+.5f);
     guide.v[7]=newNx*confidence;guide.v[8]=newNy*confidence;guide.v[9]=newIntercept*confidence;
-    const float tolerance=tolerateRinging?1.5f+1.5f*sat((colorSpread-48)/64):1.5f;
+    const float tolerance=(tolerateRinging?1.5f+1.5f*sat((colorSpread-48)/64):1.5f)*(tuning.tolerance/100.f);
     if constexpr(diagnostic){debug->error=error;if(error>=tolerance)debug->reason=6;}
     guide.v[20]=confidence*sat((tolerance-error)/tolerance)*(partial?.65f:1.f);
     return guide;
 }
-template<bool coherent> inline Guide locateContour(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,Guide guide,bool tolerant){
-    if constexpr(!coherent)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+template<bool coherent> inline Guide locateContour(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,Guide guide,bool tolerant,ContourTuning tuning={}){
+    if constexpr(!coherent)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     const float confidence=guide.v[0];
-    if(!tolerant||confidence<.03f)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(!tolerant||confidence<.03f)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     std::array<float,3> low{},delta{};float energy=0,minDelta=255,maxDelta=-255;
     for(int c=0;c<3;++c){low[c]=guide.v[1+c]/confidence;delta[c]=guide.v[4+c]/confidence-low[c];energy+=delta[c]*delta[c];minDelta=std::min(minDelta,delta[c]);maxDelta=std::max(maxDelta,delta[c]);}
-    if(maxDelta-minDelta<48)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(maxDelta-minDelta<48)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     const float nx=guide.v[7]/confidence,ny=guide.v[8]/confidence,intercept=guide.v[9]/confidence;
     const bool horizontal=std::abs(nx)>=std::abs(ny);const float normal=horizontal?nx:ny;
-    if(std::abs(normal)<.5f)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(std::abs(normal)<.5f)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     const float inverseEnergy=1/std::max(1.f,energy),inverseNormal=1/normal;
     float along[9],cross[9];int count=0;
     for(int line=-8;line<=8;line+=4){
@@ -200,62 +202,65 @@ template<bool coherent> inline Guide locateContour(const uint8_t* pixels,uint32_
             const float t=sat((.5f-a)/(b-a)),position=at+.5f+t;
             const auto* p=reinterpret_cast<const uint8_t*>(rgba+k);const auto* q=p+4;if(p[3]!=255||q[3]!=255)continue;float error=0;
             for(int c=0;c<3;++c){const float d=p[c]+t*(q[c]-p[c])-low[c]-.5f*delta[c];error+=d*d;}
-            if(error>192+energy*.12f)continue;
+            if(error>(192+energy*.12f)*(tuning.tolerance/100.f))continue;
             const float candidate=(position-predicted)*(position-predicted)+error/(64+energy*.1f);
             if(candidate<score){score=candidate;selected=position;found=true;}
         }
         if(found){along[count]=float(line);cross[count]=selected-(horizontal?cx:cy)-.5f;++count;}
     }
-    if(count<4)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(count<4)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     // Fit a local quadratic rather than forcing a bend into a short straight
     // segment. Its central position and tangent join neighboring guide cells.
     double s1=0,s2=0,s3=0,s4=0,p0=0,p1=0,p2=0;
     for(int i=0;i<count;++i){const double t=along[i],tt=t*t,p=cross[i];s1+=t;s2+=tt;s3+=tt*t;s4+=tt*tt;p0+=p;p1+=t*p;p2+=tt*p;}
     const double inv=1./count,a=s2-s1*s1*inv,b=s3-s1*s2*inv,c=s4-s2*s2*inv,u=p1-s1*p0*inv,v=p2-s2*p0*inv,det=a*c-b*b;
-    if(det<.001)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(det<.001)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     const float slope=float((u*c-v*b)/det),curvature=float((v*a-u*b)/det),center=float((p0-slope*s1-curvature*s2)*inv);
     float error=0;for(int i=0;i<count;++i){const float d=cross[i]-center-slope*along[i]-curvature*along[i]*along[i];error+=d*d/count;}
-    if(std::abs(slope)>1.5f||std::abs(curvature)>.06f||error>1.5f)return locateCrossings(pixels,width,height,cx,cy,guide,tolerant);
+    if(std::abs(slope)>1.5f||std::abs(curvature)>.06f||error>1.5f*(tuning.tolerance/100.f))return locateCrossings(pixels,width,height,cx,cy,guide,tolerant,nullptr,tuning);
     const float sign=normal<0?-1.f:1.f,scale=sign/std::sqrt(1+slope*slope);
     const float newNx=horizontal?scale:-slope*scale,newNy=horizontal?-slope*scale:scale;
     const float position=(horizontal?cx:cy)+.5f+center;
     guide.v[7]=newNx*confidence;guide.v[8]=newNy*confidence;
     guide.v[9]=(horizontal?-newNx*position-newNy*(cy+.5f):-newNy*position-newNx*(cx+.5f))*confidence;
-    guide.v[20]=confidence*sat((1.5f-error)/1.5f)*std::min(1.f,count/4.f);
+    const float tolerance=1.5f*(tuning.tolerance/100.f);
+    guide.v[20]=confidence*sat((tolerance-error)/tolerance)*std::min(1.f,count/4.f);
     guide.v[21]=0;
     return guide;
 }
-template<bool recoverMissing=true,bool curves=true> inline Guide refined(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,bool tolerateRinging=false){
-    auto broad=analyze(pixels,width,height,cx,cy,4,tolerateRinging);
+template<bool recoverMissing=true,bool curves=true> inline Guide refined(const uint8_t* pixels,uint32_t width,uint32_t height,int cx,int cy,bool tolerateRinging=false,ContourTuning tuning={}){
+    const int broadStep=tuning.minimumSize==100?4:std::max(1,int(std::lround(4*tuning.minimumSize/100.f)));
+    const int fineStep=tuning.minimumSize==100?2:std::max(1,int(std::lround(2*tuning.minimumSize/100.f)));
+    auto broad=analyze(pixels,width,height,cx,cy,broadStep,tolerateRinging,nullptr,tuning);
     bool located=false,fineAnalyzed=false,fineLocated=false;Guide fine;
     // A short dense center probe catches structures between the coarse taps.
     // Keep the broad plane model; refine geometry only when it is supported.
     float range=0;
     const auto* center=pixels+(size_t(std::clamp(cy,0,int(height)-1))*width+std::clamp(cx,0,int(width)-1))*4;
     if(broad.v[0]<.03f){for(auto [dx,dy]:{std::pair{-1,0},std::pair{1,0},std::pair{0,-1},std::pair{0,1}}){const auto* p=pixels+(size_t(std::clamp(cy+dy,0,int(height)-1))*width+std::clamp(cx+dx,0,int(width)-1))*4;for(int c=0;c<3;++c)range=std::max(range,float(std::abs(int(p[c])-center[c])));}}
-    if((broad.v[0]>.03f&&broad.v[20]<.85f)||range>12){fine=analyze(pixels,width,height,cx,cy,2,tolerateRinging);fineAnalyzed=true;
+    if((broad.v[0]>.03f&&broad.v[20]<.85f)||range>12){fine=analyze(pixels,width,height,cx,cy,fineStep,tolerateRinging,nullptr,tuning);fineAnalyzed=true;
         bool supported=true;
         if(tolerateRinging&&broad.v[0]>.03f&&fine.v[0]>.03f){float coarseEnergy=0,fineEnergy=0;for(int c=0;c<3;++c){const float a=(broad.v[4+c]-broad.v[1+c])/broad.v[0],b=(fine.v[4+c]-fine.v[1+c])/fine.v[0];coarseEnergy+=a*a;fineEnergy+=b*b;}supported=fineEnergy>=coarseEnergy*.125f;}
         // A locally neat but much weaker pulse can be compression ringing.
         // It must not replace the color pair of the real surrounding edge.
         if(supported&&fine.v[20]>.10f&&fine.v[20]>broad.v[20]*.8f){
-            fine=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,oriented(broad,fine),tolerateRinging);fineLocated=true;
+            fine=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,oriented(broad,fine),tolerateRinging,tuning);fineLocated=true;
             // A neat local fit can fail actual crossing localization. Do not
             // discard the broad model until the fine geometry is validated.
             if(fine.v[20]>.001f){for(int k=10;k<20;++k)fine.v[k]=broad.v[k];fine.v[22]=broad.v[22];broad=fine;located=true;}
         }
     }
-    if(!located)broad=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,broad,tolerateRinging);
+    if(!located)broad=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,broad,tolerateRinging,tuning);
     // Recover omitted local boundaries only where the established selection
     // has no usable geometry. A failed preliminary line must not prevent
     // actual crossing localization of a compatible fine color model.
     if constexpr(recoverMissing)if(tolerateRinging&&broad.v[20]<.03f){
         if(!fineAnalyzed){
             if(broad.v[0]<=.03f)for(auto [dx,dy]:{std::pair{-3,-3},std::pair{3,-3},std::pair{-3,3},std::pair{3,3}}){const auto* p=pixels+(size_t(std::clamp(cy+dy,0,int(height)-1))*width+std::clamp(cx+dx,0,int(width)-1))*4;for(int c=0;c<3;++c)range=std::max(range,float(std::abs(int(p[c])-center[c])));}
-            if(broad.v[0]>.03f||range>=8){fine=analyze(pixels,width,height,cx,cy,2,true);fineAnalyzed=true;}
+            if(broad.v[0]>.03f||range>=8){fine=analyze(pixels,width,height,cx,cy,fineStep,true,nullptr,tuning);fineAnalyzed=true;}
         }
         if(fineAnalyzed&&fine.v[0]>.03f){
-            if(!fineLocated)fine=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,oriented(broad,fine),true);
+            if(!fineLocated)fine=locateContour<recoverMissing&&curves>(pixels,width,height,cx,cy,oriented(broad,fine),true,tuning);
             fine.v[20]*=.75f;
             if(fine.v[20]>.03f&&fine.v[20]>broad.v[20]){for(int k=10;k<20;++k)fine.v[k]=broad.v[k];fine.v[22]=broad.v[22];broad=fine;}
         }
@@ -464,23 +469,23 @@ template<int grid> inline void regularizeGuides(std::vector<Guide>& guides,uint3
         out.v[9]=(-newNx*(px+move*nx)-newNy*(py+move*ny))*confidence;
     }});
 }
-template<int grid,bool recovery=true> inline void buildGuides(const uint8_t* pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging,std::vector<Guide>& guides){
+template<int grid,bool recovery=true> inline void buildGuides(const uint8_t* pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging,std::vector<Guide>& guides,ContourTuning tuning={}){
     const auto columns=(width+grid-1)/grid,rows=(height+grid-1)/grid;guides.resize(size_t(columns)*rows);
-    parallelFor(rows,workers,[&](uint32_t y){for(uint32_t x=0;x<columns;++x){auto g=contours>.8f?refined<recovery,true>(pixels,width,height,int(x*grid+grid/2),int(y*grid+grid/2),tolerateRinging):refined<recovery,false>(pixels,width,height,int(x*grid+grid/2),int(y*grid+grid/2),tolerateRinging);guides[size_t(y)*columns+x]=surfaces||!recovery?g:contourOnly(g);}});
+    parallelFor(rows,workers,[&](uint32_t y){for(uint32_t x=0;x<columns;++x){auto g=contours>.8f?refined<recovery,true>(pixels,width,height,int(x*grid+grid/2),int(y*grid+grid/2),tolerateRinging,tuning):refined<recovery,false>(pixels,width,height,int(x*grid+grid/2),int(y*grid+grid/2),tolerateRinging,tuning);guides[size_t(y)*columns+x]=surfaces||!recovery?g:contourOnly(g);}});
     if constexpr(recovery)if(!surfaces&&tolerateRinging&&contours>.8f)regularizeGuides<grid>(guides,columns,rows,workers);
 }
-template<int grid> inline void restoreGrid(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging=false) {
+template<int grid> inline void restoreGrid(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging=false,ContourTuning tuning={}) {
     if(!surfaces&&!contours)return;
     TimingTimeline timing;const auto columns=(width+grid-1)/grid,rows=(height+grid-1)/grid;
     thread_local std::vector<Guide> cache;auto& guides=cache;
-    buildGuides<grid>(pixels.data(),width,height,workers,surfaces,contours,tolerateRinging,guides);
+    buildGuides<grid>(pixels.data(),width,height,workers,surfaces,contours,tolerateRinging,guides,tuning);
     timing.mark("decode.unified385.guide");
     parallelFor((height+15)/16,workers,[&](uint32_t job){for(uint32_t y=job*16;y<std::min(height,(job+1)*16);++y){if(surfaces)render<grid,true>(pixels.data()+size_t(y)*width*4,width,y,guides.data(),columns,rows,surfaces,contours);
         else render<grid,false>(pixels.data()+size_t(y)*width*4,width,y,guides.data(),columns,rows,0,contours);}});timing.mark("decode.unified385.render");
 }
-inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging=false){
+inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,bool tolerateRinging=false,ContourTuning tuning={}){
     // Weak corrections need fewer overlapping guides, not another algorithm.
-    if(contourGuideSpacing(surfaces,contours)==16)restoreGrid<16>(pixels,width,height,workers,surfaces,contours,tolerateRinging);
-    else restoreGrid<8>(pixels,width,height,workers,surfaces,contours,tolerateRinging);
+    if(contourGuideSpacing(surfaces,contours)==16)restoreGrid<16>(pixels,width,height,workers,surfaces,contours,tolerateRinging,tuning);
+    else restoreGrid<8>(pixels,width,height,workers,surfaces,contours,tolerateRinging,tuning);
 }
 }

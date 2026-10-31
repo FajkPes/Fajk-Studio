@@ -18,13 +18,15 @@ Frame fixture(uint32_t w,uint32_t h){Frame frame{w,h,0,1,Bytes(pixelBytes(w,h),2
 int main(){try{
     for(auto [w,h]:{std::pair{1u,1u},{1u,19u},{19u,1u},{7u,9u},{17u,23u},{63u,65u},{513u,517u}}){
         const auto frame=fixture(w,h);
-        for(uint32_t strength:{0u,25u,50u,100u}){
+        for(uint32_t strength:{0u,25u,50u,100u,150u,200u}){
             auto single=frame.pixels,multi=frame.pixels;
             finalSharpen(single,w,h,1,strength);finalSharpen(multi,w,h,3,strength);check(single==multi);
+            for(uint32_t y=0;y<h;++y)for(uint32_t x=0;x<w;++x){uint32_t actual;
+                std::memcpy(&actual,single.data()+(size_t(y)*w+x)*4,4);check(actual==finalSharpPixel(frame.pixels,w,h,x,y,strength));}
             if(!strength)check(single==frame.pixels);
             for(size_t at=0;at<single.size();at+=4){
                 check(single[at+3]==frame.pixels[at+3]);
-                const int delta=int(single[at])-int(frame.pixels[at]);check(std::abs(delta)<=24);
+                const int delta=int(single[at])-int(frame.pixels[at]);check(std::abs(delta)<=int((24*((strength*256+50)/100)+128)>>8));
                 check(int(single[at+1])-int(frame.pixels[at+1])==delta&&int(single[at+2])-int(frame.pixels[at+2])==delta);
             }
             if(w>=512&&gpuInfo().available){auto gpu=frame.pixels;ScopedComputeBackend selected(ComputeBackend::Gpu);const auto activity=gpuActivity();
@@ -39,6 +41,21 @@ int main(){try{
     Frame peak{3,3,0,1,Bytes(pixelBytes(3,3),90)};for(size_t at=3;at<peak.pixels.size();at+=4)peak.pixels[at]=255;
     for(int c=0;c<3;++c)peak.pixels[(1*3+1)*4+c]=100;
     auto stronger=peak.pixels;finalSharpen(stronger,3,3,1,100);check(stronger[(1*3+1)*4]==101);
+    auto doubled=peak.pixels;finalSharpen(doubled,3,3,1,200);check(doubled[(1*3+1)*4]==102);
+    // Local transparency at vector and row-band boundaries must protect the
+    // same five-pixel neighbourhood, with original luma on both sides.
+    for(auto [w,h]:{std::pair{17u,67u},std::pair{641u,449u}}){
+        auto mixed=fixture(w,h);std::mt19937 random(610);
+        for(size_t at=0;at<mixed.pixels.size();at+=4){for(unsigned c=0;c<3;++c)mixed.pixels[at+c]=uint8_t(random());
+            if((at/4)%37==0)mixed.pixels[at+3]=127;}
+        for(uint32_t strength:{50u,100u,200u}){
+            auto actual=mixed.pixels;finalSharpen(actual,w,h,10,strength);
+            for(uint32_t y=0;y<h;++y)for(uint32_t x=0;x<w;++x){uint32_t value;std::memcpy(&value,actual.data()+(size_t(y)*w+x)*4,4);
+                check(value==finalSharpPixel(mixed.pixels,w,h,x,y,strength));}
+            if(uint64_t(w)*h>=512*512&&gpuInfo().available){auto gpu=mixed.pixels;ScopedComputeBackend backend(ComputeBackend::Gpu);
+                check(gpuFinalSharpen(gpu,w,h,strength)&&gpu==actual);}
+        }
+    }
     // Verify filter order independently: the public decoder must equal the
     // fully reconstructed image followed by one final pass, with every budget.
     auto frame=fixture(513,517);auto codec=makeCodec(CodecId::Fajk);codec->setThreads(3);

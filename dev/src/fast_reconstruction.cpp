@@ -7,6 +7,8 @@
 #include "flat_regions.hpp"
 #include "text_guard.hpp"
 #include "gpu_compute.hpp"
+#include "decode_presentation.hpp"
+#include "artifact_cleanup.hpp"
 #include <array>
 #include <immintrin.h>
 namespace fajk {
@@ -174,11 +176,11 @@ UpscaleGeometry upscaleGeometry(const Frame& native,uint32_t width,uint32_t heig
     return {xLow,yLow,xFraction,yFraction,sharpness};
 }
 }
-Frame fastReconstruct441(Frame& native,uint32_t width,uint32_t height,uint32_t workers,uint32_t budget,const Reconstruction441& settings,std::span<uint8_t> destination,const FlatRegionLayout* flat,const DecodedTextProtection* protectedText){
+Frame fastReconstruct441(Frame& native,uint32_t width,uint32_t height,uint32_t workers,uint32_t budget,const Reconstruction441& settings,std::span<uint8_t> destination,const FlatRegionLayout* flat,const DecodedTextProtection* protectedText,DecodePresentation* presentation,const ArtifactGuidePlan* artifact){
     native.validate();validate441(settings);
     require(width>=native.width&&height>=native.height,"Invalid reconstruction dimensions");
     require(destination.empty()||destination.size()==pixelBytes(width,height),"Invalid fast reconstruction output");
-    const auto quality=cleanupQuality(budget,width,height);const float amount=std::clamp(quality.contours*settings.intensity/100.f,0.f,1.f);
+    const auto quality=cleanupQuality(budget,width,height);const float amount=skirtBlend(settings,quality);
     TimingTimeline timing,parts;
     Bytes skipTiles;
     if(flat&&amount>.2f){
@@ -203,11 +205,14 @@ Frame fastReconstruct441(Frame& native,uint32_t width,uint32_t height,uint32_t w
         Frame accelerated{width,height,native.pts,native.duration,destination.empty()?Bytes(pixelBytes(width,height)):Bytes{}};
         auto pixels=destination.empty()?std::span(accelerated.pixels):destination;
         const auto geometry=upscaleGeometry(native,width,height,budget,settings,amount,quality);
+        const auto fusedSharpening=presentation&&!flat?presentation->sharpening:0;
         if(gpuContourUpscale(native,width,height,pixels,geometry.xLow,geometry.xFraction,geometry.yLow,geometry.yFraction,
-            geometry.sharpness,amount,settings.strongerTangents/100.f,.4f*quality.antialias*settings.antialias/50.f,skipTiles,hasFma())){
+            geometry.sharpness,amount,settings.strongerTangents/100.f,.4f*quality.antialias*settings.antialias/50.f,skipTiles,hasFma(),fusedSharpening,artifact)){
+            if(fusedSharpening)presentation->applied=true;
             timing.mark("decode.fast441.contour_upscale.gpu");return accelerated;
         }
     }
+    if(artifact)renderArtifactGuidePlan(native.pixels,workers,*artifact);
     thread_local Bytes snapshot;Bytes largeSnapshot;
     auto& original=native.pixels.size()<=32*1024*1024?snapshot:largeSnapshot;
     if(settings.protectText&&amount)original.assign(native.pixels.begin(),native.pixels.end());

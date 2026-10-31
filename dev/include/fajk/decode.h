@@ -39,7 +39,7 @@ FAJK_API int fajk_get_info(fajk_decoder* decoder,fajk_sequence_info* info);
 FAJK_API int fajk_decode_frame(fajk_decoder* decoder,uint64_t index,uint8_t* rgba,size_t buffer_size,size_t stride,int64_t* pts_100ns,int64_t* duration_100ns);
 /* 0 = automatic (logical CPU count minus two); capped to available processors. */
 FAJK_API int fajk_set_threads(fajk_decoder* decoder,uint32_t threads);
-/* 0 = R500 CPU (default), 1 = R500 GPU. Execution choice only; file format
+/* 0 = R600.4 CPU (default), 1 = R600.4 GPU. Execution choice only; file format
    stays compatible. Unsupported operations/devices fall back to CPU. */
 FAJK_API int fajk_set_backend(fajk_decoder* decoder,uint32_t backend);
 /* Base wavelet reconstruction strength, 100 is the default. Does not change
@@ -47,7 +47,8 @@ FAJK_API int fajk_set_backend(fajk_decoder* decoder,uint32_t backend);
    setting it to zero does not disable that saved cleanup. Lossless/palette
    modes are unaffected. */
 FAJK_API int fajk_set_deblocking(fajk_decoder* decoder,uint32_t percent);
-// Optional final display sharpening after reconstruction, default 0 (same as Studio).
+// Optional final display sharpening after reconstruction, 0..200 percent.
+// Default 0 (same as Studio); 100 retains the original full-strength pass.
 // Saved R441 contour contrast remains a separate reconstruction control.
 FAJK_API int fajk_set_sharpening(fajk_decoder* decoder,uint32_t percent);
 FAJK_API int fajk_frame_at_time(fajk_decoder* decoder,int64_t pts_100ns,uint64_t* index);

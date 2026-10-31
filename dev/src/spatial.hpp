@@ -21,7 +21,7 @@ struct SpatialTileTimer {
     ~SpatialTileTimer(){mark(part);}
 };
 inline int spatialTileExtent(uint8_t mode) {
-    return mode == 28 || mode == 30 ? 4 : mode == 27 || mode == 29 || mode == 32 ? 8 : 16;
+    return mode == 28 || mode == 30 ? 4 : mode == 27 || mode == 29 || mode == 32 || mode == 33 ? 8 : 16;
 }
 inline unsigned spatialAdaptation(uint8_t mode) {
     return mode == 8 || mode == 10 ? 4 : mode == 9 || mode == 11 || mode == 14 || mode == 15 ? 6 : 5;
@@ -34,7 +34,7 @@ struct SpatialCoderConfig {
         require(width > 0 && height > 0 && width <= int(maxDimension) && height <= int(maxDimension) &&
                     stride >= width && std::isfinite(step) && step > 0,
                 "Invalid coefficient band geometry or step.");
-        require((entropyMode <= 18 || (entropyMode >= 23 && entropyMode <= 30) || entropyMode == 32) && (entropyMode < 12 || !parent) &&
+        require((entropyMode <= 18 || (entropyMode >= 23 && entropyMode <= 30) || entropyMode == 32 || entropyMode == 33) && (entropyMode < 12 || !parent) &&
                     (!entropyMode || extended) && (!extended || enhanced) &&
                     (!parent || (extended && parentStride >= (width + 1) / 2)),
                 "Invalid spatial coder configuration.");

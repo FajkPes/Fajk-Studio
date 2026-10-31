@@ -4,6 +4,9 @@ namespace fajk {
 inline constexpr uint8_t reconstruction441Version=130;
 inline constexpr uint32_t reconstruction441HeaderBytes=36;
 void validate441(const Reconstruction441&);
+inline uint16_t shapeTuningWord(const Reconstruction441& s){
+    return s.shapes==ContourTuning{}?0:uint16_t(s.shapes.tolerance|(s.shapes.minimumSize<<8));
+}
 struct Reconstruction441Packet {
     Reconstruction441 settings;
     uint32_t budget;

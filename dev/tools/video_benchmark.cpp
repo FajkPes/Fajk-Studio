@@ -89,7 +89,7 @@ int wmain(int argc,wchar_t** argv){try{
     require(frames.size()==count,"Video does not contain the requested number of frames.");
     std::set<uint32_t> sources;for(const auto& frame:frames)sources.insert(crc32(frame.pixels));require(sources.size()>1,"Video benchmark received repeated identical frames.");
     const auto n=uint32_t(frames.size());EncodeOptions options;options.backend=backend;options.threads=workers;options.quality=100;options.targetBytes=budget;
-    if(argc==9){const std::wstring mode=argv[8];require(mode==L"fast"||mode==L"quality","Invalid speed mode.");options.speed=mode==L"fast"?EncodeSpeed::Fast:EncodeSpeed::MoreQuality;}
+    if(argc==9){const std::wstring mode=argv[8];require(mode==L"fast"||mode==L"quality"||mode==L"max","Invalid speed mode.");options.speed=mode==L"max"?EncodeSpeed::MaxCompression:mode==L"fast"?EncodeSpeed::Fast:EncodeSpeed::MoreQuality;}
     auto codec=makeCodec(CodecId::Fajk);codec->setComputeBackend(backend);codec->setThreads(workers);
     Packet warm;for(int i=0;i<2;++i)warm=codec->encode(frames[0],options);
     std::vector<Packet> packets(n);std::vector<Sample> samples(n);

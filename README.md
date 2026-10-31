@@ -1,18 +1,110 @@
-# Fajk Studio R500.1
+> Windows balík R600.4 stáhnete na [stránce vydání](https://github.com/FajkPes/Fajk-Studio/releases/latest). Starší verze R500.1 zůstává v Releases.
 
-Windows x64 — verze **0.11.500.1**, checkpoint z 23. října 2026.
+# Fajk Studio — R600.4 (0.11.600.4)
 
-Stáhněte [nejnovější vydání](https://github.com/FajkPes/Fajk-Studio/releases/latest), rozbalte ZIP a spusťte **R500/Spustit Fajk Studio.cmd**. Balík obsahuje GUI, CLI, dekódovací SDK a potřebný Windows App SDK runtime.
+R600.4 přidává **Max komprese · Fast**, samostatný režim vedle Fast a More
+quality. Má rychlé hledání Fast, omezenou korekci silných barevných detailů
+před kvantizací a při vyšším rozpočtu větší pracovní rozlišení s novým
+uniformním kontextovým modelem. AQ se nezapíná a výběr barevných složek
+se nemění. CLI: `--fast-max`. Mezisnímková metoda je nezávislá volba.
 
-Tento nový repozitář obsahuje zmrazené zdroje R500.1 odpovídající vydanému checkpointu. Experimentální R510 ani vývojová pohybová predikce nejsou součástí tohoto vydání.
+Na třech 1440p herních snímcích při limitu 80 kB klesla proti Fast chyba
+červených oblastí o 3,6–6,5 % a chyba hran o 8,5–11,6 %. Při 30 kB jsou
+zisky menší a ne všechny metriky se zlepšují. Dva párové exporty 32snímkového
+1440p klipu byly v průměru o 5,2 % rychlejší; sekvenční decode vzrostl
+z 10,32 na 11,62 ms/snímek. Nejde o záruku dvojnásobné kvality.
+Podrobné výsledky a omezení jsou v [aktuálním záznamu](dev/docs/CURRENT.md).
+Hlavní spouštěč používá R600.4, nastavení se převezme z R600.3.
 
-[Změny a dobové výsledky ověření](dev/diagnostics/R500-P1-20261023/RESULTS.md). Zdrojový archiv i binární balík byly před publikací ověřeny proti zachovanému SHA-256 manifestu. Nové funkční ověření publikovaného CLI je uvedeno v poznámkách vydání.
+R600.3 ukazuje nastavenou a výslednou sílu Skirt/deringu. Automatika snižuje
+nastavenou sílu lineárně mezi kvalitou 10 a 50 a zohledňuje hustotu dat.
+Po jejím vypnutí platí ruční síla bez obou útlumů. Posuvník si svou hodnotu
+pamatuje; po výpočtu náhledu se výsledná síla počítá ze skutečného paketu.
 
-## Dokumentace checkpointu
+Kontury a tvary mají toleranci a minimální měřítko 25–200 %, obě výchozí
+100 %. Při 100 % zachovávají předchozí rozpoznávání. Nižší tolerance je
+přísnější, vyšší dovoluje méně pravidelnou konturu; menší měřítko hledá
+drobnější tvary. Měřítko je relativní velikost analyzovaného okolí,
+nikoli ostrý pixelový limit. Nastavení se ukládá do souboru; vlastní volby
+přehrávejte dodaným SDK R600.3 nebo novějším.
 
-# Fajk Studio R500
+R600.2 rozšiřuje finální ostření na 0–200 % v UI i SDK. Původních 100 %
+zachovává dosavadní sílu. CPU ostření používá krátké řádkové buffery a
+předpočítaný jas; na testovaném 1440p obrazu s 10 workery kleslo z 1,90
+na 0,93 ms. GPU kontury rozdělují barevné složky mezi více vláken a
+zachovávají přesné pixely. Zrychlení celého decode je menší: CPU 80k
+23,03 → 21,79 ms/snímek, GPU se dvěma větvemi přibližně beze změny.
+Nastavení R600.2 se převzalo z R600.1; původní vydání zůstávají zachovaná.
 
-Aktuální sestava **0.11.500.1** je v `release/R500`. Společná nabídka
+R600.1 zobrazuje skutečný průměr aktivního decode na hotový snímek a rychlost
+dekodéru ve snímcích/s, odděleně od latence úlohy a převzetí z fronty.
+Souběh se započítá jednou a čekání na plnou frontu je vynechané.
+Opravené jsou i názvy CPU/GPU v nabídce.
+
+R600 spojuje renderer základního čištění, kontury, zvětšení a ostření na GPU.
+Omezená cache nativního GPU obrazu odstraňuje opakovaný upload; při evikci
+zůstává bezpečná cesta z RAM. CPU nadále připravuje vodicí data pro čištění.
+Max porovnává přesné alternativy z nedávné reference a původního keyframu.
+Přesný režim zachovává kratší řetězce z nedávných referencí; vynucené návraty
+ke starému keyframu byly při měření horší a nepoužívají se.
+CPU Max neopakuje kanonickou rekonstrukci.
+Měření a ověření obrazu jsou v [aktuálním záznamu](dev/docs/CURRENT.md).
+
+R560.1 přidává rychlou AVX2 pohybovou predikci pro CPU a spojené GPU dekódování: predikci, přesnou inverzi, obnovu barev a referenční filtr. Mezilehlý předpovězený obraz se nevrací do RAM a řídké koeficienty se přenášejí bez zbytečných nul, s přesným zachováním hodnot. Při nepodporované GPU operaci funguje CPU fallback se stejným obrazem. Opravena je také obnova reference při změně rozlišení a zacházení s pamětí volitelné cache. Původní R560 zůstává v samostatné složce.
+
+Předchozí R560 zrychluje obnovu barevného rezidua přes AVX2, přeskakuje nepoužité výpočty při úplném převzetí obrazu a opakovaně využívá přesně shodný keyframe. Optimalizace zachovávají pixely i zakódovaná data R550; síla komprese se nezvyšuje. Cache jednoho původního keyframu je omezena na 32 MiB na volající vlákno včetně jeho zakódovaných dat. Nativní výstup do bufferu odstraňuje jednu alokaci a celou kopii obrazu. Nastavení nového balíčku se převezme z R550, pokud dosud neexistuje nastavení R560.
+
+Předchozí R550 upravilo volitelnou pohybovou predikci **Max komprese**: opravuje přenos barevných chyb, tlumí hromadění jasové chyby a omezuje barevné zrnění. Běžné nastavení 0–6 má jemnější kvantizaci; agresivní 12–16 zůstává volitelné.
+V sekci Video zapněte Mezisnímkovou kompresi a vyberte metodu:
+
+- **Koeficienty – přesně stejný obraz**: bezztrátově překóduje koeficienty
+  samostatně zakódovaných snímků. Zachová jejich pixely i původní časové
+  kolísání kresby. CLI: `--temporal-coefficients`.
+- **Oblasti – nastavitelná podobnost**: přebírá podobné části na stejném
+  místě a ukládá číselné korekce změněných bloků. Má vlastní toleranci RGB
+  a limit držení podobných oblastí. CLI: `--temporal`.
+- **Max komprese – pohyb a tolerance (experimentální)**: hledá posun
+  po čtvrtinách pixelu a místní afinní změnu (otočení/měřítko/smyk),
+  předpoví obraz z rekonstruované reference a uloží kvantované reziduum.
+  Začněte silou 6; vyšší hodnoty až 16 mohou ušetřit více za cenu detailů.
+  Nula je nejjemnější ztrátové nastavení, nikoli bezztrátový režim.
+  CLI: `--temporal-max --similar-tolerance 6`.
+
+Výchozí **Každý snímek zvlášť (původní)** zůstává dostupné; CLI
+`--intra-only`. Síla Max komprese a tolerance metody Oblasti se ukládají
+odděleně, takže přepnutí metody nemění nastavení té druhé. Fast / More quality
+je samostatná volba. AQ a ochrana textu jsou výchozí vypnuté.
+
+Nové koeficientové a pohybové video používá kontejner v3, pakety 136/137.
+Export má nejvýše 16 závislostí. Při změnách platí strop reference 5 sekund
+podle PTS i případný kratší interval zvolený uživatelem. Přesně statická část
+používá osmibajtové přímé odkazy, bez zbytečných keyframů a rostoucího řetězce.
+Max může kratší řetězec restartovat ze stejného keyframu; drahá predikce se
+nahradí samostatným snímkem. Libovolné přeskakování podporuje dodané SDK.
+
+GPU volba je společná pro enkodér, náhled a přehrávání. V Max režimu GPU
+navíc hledá pohyb a afinní parametry a spojuje přípravu barevného rezidua
+s dopřednou transformací bez mezilehlého přenosu float rovin. Enkodér využívá
+vybrané koeficienty přímo, nedekóduje vlastní čerstvě zapsanou entropii.
+Příliš velký kandidát vynechá inverzi a RGB rekonstrukci. Entropie, volba
+režimů a obnova enkodérové reference zůstávají na CPU. GPU dekodér využívá
+přesnou inverzi a navazující zpracování na zařízení; CPU fallback zachová
+stejnou referenci i po přeskoku nebo změně filtrů.
+
+Max není zárukou stejné kvality ani rychlejšího encode než samostatné snímky.
+Úspora závisí na obsahu a síle. Přibližné ostré masky 8×8 se v něm nepoužívají;
+opravy se počítají průběžně. Kresba reference může zachovat omezenou část své
+chyby, aby se zbytečně nepřekreslovala při malých změnách. Filtry zobrazení
+se nikdy nevracejí do predikční reference. Nelze slíbit úplné odstranění
+blikání, zejména u samostatně kódovaných snímků s malým rozpočtem.
+
+Použijte dodané SDK R560 (C ABI 1); nové Max reziduum 134/15 vyžaduje tuto DLL. R500 nové v3 soubory nepřečte. Staré
+intra soubory i kontejner v1/v2 zůstávají podporované. Původní vydání R550
+je zachováno v samostatné složce; nastavení R560 je mimo nahrazovanou složku app.
+
+## Informace o předchozích vydáních
+
+Společná nabídka
 **Enkodér a dekodér** nastaví CPU/GPU pro kompresi, náhled i přehrávání.
 **Fast / More quality** zůstává samostatnou volbou. Adaptivní kvantizace
 a ochrana textu jsou výchozí vypnuté; oba přepínače se nadále ukládají.
@@ -55,7 +147,7 @@ Přesné zdrojové rozdíly (132) vyžadují alespoň 0.11.490.2. Staré intra s
 zůstávají podporované; C ABI je stále 1.
 [Ověření, měření a omezení R500](dev/diagnostics/Temporal-20261023/RESULTS.md).
 
-**R500 GPU:** společná nabídka Enkodér a dekodér volí `R500 GPU`
+**R510 GPU:** společná nabídka Enkodér a dekodér volí `R510 GPU`
 také pro náhled a přehrávání. Obě cesty používají současný
 formát R470. Výchozí CPU zůstává zachované; GPU je volitelná a při
 nedostupnosti karty či nepodporované operaci použije CPU.
@@ -94,7 +186,7 @@ ztratit jemné detaily; kvalita závisí na obsahu. CLI: `--fast` nebo
 [Měření Fast / More quality](dev/diagnostics/R490-20261022/FAST-RESULTS.md).
 
 Spuštění: **Spustit Fajk Studio.cmd** → `release/R500/app/FajkStudio.exe`.
-`Build.bat` sestaví, otestuje a publikuje aktuální R500; `Test.bat` provede
+`Build.bat` sestaví, otestuje a publikuje aktuální R510; `Test.bat` provede
 kontrolu bez publikování. Zdroje jsou v `dev/src`, SDK v `dev/SDK`.
 
 Adaptivní kvantizace je ve výchozím nastavení vypnutá. Přepínač pod kvalitou dovoluje
@@ -123,7 +215,7 @@ samostatné bajty každého pixelu. Hlavičky/DC a padding se vykazují zvláš�
 Vypnutý Debug nepořizuje mapy ani referenční encode. Do souboru se debug mapy
 neukládají; ukládají se potřebné příznaky místní přesnosti a koeficienty.
 
-Používejte přiloženou **SDK R500**. ABI je 1, nativní pakety s místní AQ
+Používejte přiloženou **SDK R510**. ABI je 1, nativní pakety s místní AQ
 používají koeficientový režim 32. Není garantováno, že každý 2K snímek dekóduje
 pod 16 ms, zvlášť při souběžné CPU zátěži.
 

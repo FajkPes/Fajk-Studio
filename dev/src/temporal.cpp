@@ -2,16 +2,21 @@
 #include "fajk/entropy.hpp"
 #include "fajk/hardware.hpp"
 #include "temporal_compare.hpp"
+#include "temporal_coefficients.hpp"
 #include <cstring>
 
 namespace fajk {
 std::optional<Packet> TemporalEncoder::encode(std::shared_ptr<const Frame> source,uint64_t index){
     require(bool(source),"Missing temporal source.");const auto& frame=*source;
     frame.validate();
+    const bool late=anchorIndex_!=UINT64_MAX&&frame.pts>=anchor_->pts&&frame.pts-anchor_->pts>=temporalMaxKeyDuration;
+    const bool repeat=late&&lastSource_&&frame.width==lastSource_->width&&frame.height==lastSource_->height&&frame.pixels==lastSource_->pixels;
+    lastSource_=source;
     auto key=[&]() -> std::optional<Packet> {
         anchor_=source;anchorIndex_=index;previous_.reset();previousPacket_={};reconstructedKeyValid_=false;return std::nullopt;
     };
     if(anchorIndex_==UINT64_MAX||anchor_->width!=frame.width||anchor_->height!=frame.height)return key();
+    if(late&&!repeat&&frame.pixels!=anchor_->pixels)return key();
     if(tolerance_)return encodeSimilar(std::move(source),index);
     // A repeated delta keeps the same reference even after its nominal age.
     // Only a subsequent change can trigger the deferred keyframe refresh.
@@ -101,7 +106,7 @@ std::optional<Packet> TemporalEncoder::encodeSimilar(std::shared_ptr<const Frame
     // quality may try larger, unusually compressible sets. This is a speed
     // policy, not a lower bound on entropy; a rejected set becomes a full
     // original frame, with no approximate omission or quality compromise.
-    if(options_.speed==EncodeSpeed::Fast&&dirty.size()>std::max<size_t>(32,cap/128))return key();
+    if(fastEncode(options_.speed)&&dirty.size()>std::max<size_t>(32,cap/128))return key();
     require(committedIndex_==anchorIndex_&&!committedKey_.data.empty(),"Encoded temporal key was not committed.");
     if(!reconstructedKeyValid_){
         if(!referenceCodec_)referenceCodec_=makeCodec(CodecId::Fajk);
@@ -128,7 +133,7 @@ std::optional<Packet> TemporalEncoder::encodeSimilar(std::shared_ptr<const Frame
         // This only selects a clean independent source frame; it never drops
         // corrections, changes the source or weakens the similarity threshold.
         ++encodedTiles;
-        if(options_.speed==EncodeSpeed::Fast&&encodedTiles==8&&
+        if(fastEncode(options_.speed)&&encodedTiles==8&&
            uint64_t(out.data.size()-20)*dirty.size()>uint64_t(cap)*encodedTiles*2)return key();
     }
     Packet result{std::move(out.data),frame.pts,frame.duration};result.referenceIndex=anchorIndex_;return result;

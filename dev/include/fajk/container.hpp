@@ -9,7 +9,8 @@ struct IndexEntry {
     uint64_t offset = 0, size = 0;
     int64_t pts = 0, duration = 0;
     uint32_t checksum = 0;
-    uint32_t reference = 0; // 0: independent; otherwise keyframe index + 1.
+    uint32_t reference = 0; // 0: independent; otherwise reference frame index + 1.
+    uint8_t dependencyDepth = 0; // Validated in memory; not an extra on-disk field.
 };
 // Single owner, sequential writer. Only encoded packets are ever written.
 class SequenceWriter {
@@ -44,5 +45,7 @@ private:
     std::vector<IndexEntry> index_;
     uint64_t cachedReferenceIndex_ = UINT64_MAX;
     std::shared_ptr<const Packet> cachedReference_;
+    uint64_t cachedRepeatIndex_ = UINT64_MAX;
+    std::shared_ptr<const Packet> cachedRepeatReference_;
 };
 }

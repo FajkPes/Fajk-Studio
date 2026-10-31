@@ -1,2 +1,2 @@
 @echo off
-start "" /D "%~dp0release\R500\app" "%~dp0release\R500\app\FajkStudio.exe" %*
+start "" /D "%~dp0release\R600.4\app" "%~dp0release\R600.4\app\FajkStudio.exe" %*

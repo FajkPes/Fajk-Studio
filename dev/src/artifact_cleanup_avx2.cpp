@@ -1,20 +1,21 @@
 #include "artifact_cleanup.hpp"
+#include "gpu_compute.hpp"
 #include <immintrin.h>
 #include "side_cleanup_avx2.hpp"
 #include <ostream>
 namespace fajk {
-template<int grid,bool recovery> Frame effectMap(const Frame& input,float contours){
+template<int grid,bool recovery> Frame effectMap(const Frame& input,float contours,ContourTuning tuning){
     auto frame=input;const auto columns=(input.width+grid-1)/grid,rows=(input.height+grid-1)/grid;
     std::vector<edgeModel::Guide> guides;
-    edgeModel::buildGuides<grid,recovery>(input.pixels.data(),input.width,input.height,0,0,contours,true,guides);
+    edgeModel::buildGuides<grid,recovery>(input.pixels.data(),input.width,input.height,0,0,contours,true,guides,tuning);
     for(uint32_t y=0;y<input.height;++y)edgeModel::render<grid,false,true,!recovery>(frame.pixels.data()+size_t(y)*input.width*4,input.width,y,guides.data(),columns,rows,0,contours);
     return frame;
 }
-Frame contourEffectMap(const Frame& frame,uint32_t grid,float contours,bool recovery){
+Frame contourEffectMap(const Frame& frame,uint32_t grid,float contours,bool recovery,ContourTuning tuning){
     frame.validate();require(hasAvx2()&&(grid==6||grid==8||grid==16)&&std::isfinite(contours)&&contours>=0&&contours<=2,"Invalid contour effect diagnostic.");
-    if(grid==6)return recovery?effectMap<6,true>(frame,contours):effectMap<6,false>(frame,contours);
-    if(grid==16)return recovery?effectMap<16,true>(frame,contours):effectMap<16,false>(frame,contours);
-    return recovery?effectMap<8,true>(frame,contours):effectMap<8,false>(frame,contours);
+    if(grid==6)return recovery?effectMap<6,true>(frame,contours,tuning):effectMap<6,false>(frame,contours,tuning);
+    if(grid==16)return recovery?effectMap<16,true>(frame,contours,tuning):effectMap<16,false>(frame,contours,tuning);
+    return recovery?effectMap<8,true>(frame,contours,tuning):effectMap<8,false>(frame,contours,tuning);
 }
 void reportContourGuides(const Frame& frame,uint32_t grid,std::ostream& out,bool recovery,float contours){
     frame.validate();require(hasAvx2()&&(grid==6||grid==8||grid==16)&&std::isfinite(contours)&&contours>=0&&contours<=2,"Invalid contour diagnostic grid.");
@@ -36,8 +37,37 @@ void reportContourGuides(const Frame& frame,uint32_t grid,std::ostream& out,bool
            <<','<<locatedBroad.v[20]<<','<<locatedFine.v[20]<<','<<bl.reason<<','<<fl.reason<<','<<bl.count<<','<<fl.count<<','<<bl.error<<','<<fl.error<<'\n';
     }
 }
-void artifactCleanupAvx2(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,uint32_t spacing){
+void artifactCleanupAvx2(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,uint32_t spacing,ContourTuning tuning){
     require(spacing==256,"Only the current artifact reconstruction is supported.");
-    sideCleanup::restore(pixels,width,height,workers,surfaces,contours,true);
+    sideCleanup::restore(pixels,width,height,workers,surfaces,contours,true,0,tuning);
+}
+std::shared_ptr<const ArtifactGuidePlan> prepareArtifactGuidePlan(std::span<const uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,float surfaces,float contours,uint64_t sourceStamp,ContourTuning tuning){
+    validateContourTuning(tuning);
+    require(pixels.size()==pixelBytes(width,height)&&std::isfinite(surfaces)&&std::isfinite(contours)&&surfaces>=0&&surfaces<=2&&contours>=0&&contours<=2,"Invalid artifact guide plan.");
+    if(surfaces||!contours||!gpuArtifactSupported())return {};
+    try{
+        auto plan=std::make_shared<ArtifactGuidePlan>();auto guides=std::make_shared<std::vector<edgeModel::Guide>>();
+        plan->width=width;plan->height=height;plan->grid=contourGuideSpacing(surfaces,contours);plan->contours=contours;plan->sourceStamp=sourceStamp;
+        if(plan->grid==8)edgeModel::buildGuides<8>(pixels.data(),width,height,workers,0,contours,true,*guides,tuning);
+        else edgeModel::buildGuides<16>(pixels.data(),width,height,workers,0,contours,true,*guides,tuning);
+        static_assert(sizeof(edgeModel::Guide)==24*sizeof(float));
+        plan->gpuGuides.resize(guides->size()*12);
+        parallelFor(uint32_t((guides->size()+255)/256),workers,[&](uint32_t job){for(size_t i=size_t(job)*256;i<std::min(guides->size(),size_t(job+1)*256);++i){
+            const auto* source=(*guides)[i].v.data();auto* target=plan->gpuGuides.data()+i*12;
+            std::memcpy(target,source,10*sizeof(float));target[10]=source[20];target[11]=source[21];
+        }});
+        plan->guides={reinterpret_cast<const float*>(guides->data()),guides->size()*24};plan->storage=std::move(guides);
+        return plan;
+    }catch(const std::bad_alloc&){return {};}
+}
+void renderArtifactGuidePlan(std::span<uint8_t> pixels,uint32_t workers,const ArtifactGuidePlan& plan){
+    require(pixels.size()==pixelBytes(plan.width,plan.height)&&plan.storage&&(plan.grid==8||plan.grid==16),"Invalid artifact guide replay.");
+    const auto& guides=*static_cast<const std::vector<edgeModel::Guide>*>(plan.storage.get());
+    const auto columns=(plan.width+plan.grid-1)/plan.grid,rows=(plan.height+plan.grid-1)/plan.grid;
+    require(guides.size()==size_t(columns)*rows,"Invalid artifact guide replay dimensions.");
+    parallelFor((plan.height+15)/16,workers,[&](uint32_t job){for(uint32_t y=job*16;y<std::min(plan.height,(job+1)*16);++y){
+        if(plan.grid==8)edgeModel::render<8,false>(pixels.data()+size_t(y)*plan.width*4,plan.width,y,guides.data(),columns,rows,0,plan.contours);
+        else edgeModel::render<16,false>(pixels.data()+size_t(y)*plan.width*4,plan.width,y,guides.data(),columns,rows,0,plan.contours);
+    }});
 }
 }

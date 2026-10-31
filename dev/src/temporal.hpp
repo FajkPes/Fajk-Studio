@@ -11,7 +11,7 @@ constexpr uint32_t temporalCorrectionTile=16;
 // Submission-thread state. All dependent frames reference a full keyframe,
 // not another delta; codec workers can still encode independent keys in parallel.
 class TemporalEncoder {
-    std::shared_ptr<const Frame> anchor_,previous_;
+    std::shared_ptr<const Frame> anchor_,previous_,lastSource_;
     Packet previousPacket_;
     uint64_t anchorIndex_=UINT64_MAX;
     EncodeOptions options_;

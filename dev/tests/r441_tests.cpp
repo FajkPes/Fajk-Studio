@@ -14,6 +14,23 @@ void check(bool value,std::source_location at=std::source_location::current()){
 }
 template<class F>void rejected(F&& f){bool threw=false;try{f();}catch(const std::exception&){threw=true;}check(threw);}
 int main(){try{
+    // Quality fades once when creating display controls; manual mode bypasses
+    // both that envelope and density attenuation without changing other knobs.
+    for(uint32_t raw:{0u,50u,100u,200u}){
+        check(skirtQualityIntensity(raw,1,true)==raw);
+        check(skirtQualityIntensity(raw,10,true)==raw);
+        check(skirtQualityIntensity(raw,30,true)==raw/2);
+        check(skirtQualityIntensity(raw,50,true)==0);
+        check(skirtQualityIntensity(raw,100,true)==0);
+        for(int q=1;q<=100;++q)check(skirtQualityIntensity(raw,float(q),false)==raw);
+    }
+    rejected([]{skirtQualityIntensity(50,std::numeric_limits<float>::quiet_NaN(),true);});
+    for(int q=10;q<50;++q)check(skirtQualityIntensity(200,float(q+1),true)<=skirtQualityIntensity(200,float(q),true));
+    for(uint32_t budget:{30000u,80000u,200000u}){
+        auto q=cleanupQuality(budget,2560,1440);Reconstruction441 s;s.intensity=50;
+        check(skirtBlend(s,q)==q.contours*.5f);s.fixedIntensity=true;
+        check(skirtBlend(s,q)==.5f);
+    }
     check(contourGuideSpacing(0,2)==8);
     check(contourGuideSpacing(0,.7f)==16);
     check(contourGuideSpacing(.15f,.7f)==8);
@@ -247,14 +264,40 @@ int main(){try{
     auto off=packet;auto settings=view.settings;settings.intensity=settings.antialias=settings.contrast=0;update441(off,settings);
     Packet base{Bytes(view.child.begin(),view.child.end()),17,23};check(codec->decode(off,source.width,source.height).pixels==codec->decode(base,source.width,source.height).pixels);
     // Every reconstruction-only edit preserves the entire compressed child.
-    for(int control=0;control<6;++control){auto edited=packet;auto s=view.settings;
+    check(packet.data[30]==0&&packet.data[31]==0); // 100/100 preserves the original header bytes.
+    for(int control=0;control<9;++control){auto edited=packet;auto s=view.settings;
         if(control==0)s.intensity=0;if(control==1)s.strongerTangents=100;if(control==2)s.antialias=100;if(control==3)s.contrast=70;if(control==4)s.style=1;if(control==5)s.protectText=false;
+        if(control==6)s.fixedIntensity=true;
+        if(control==7)s.shapes.tolerance=175;
+        if(control==8)s.shapes.minimumSize=50;
         update441(edited,s);auto parsed=read441(edited.data,source.width,source.height);check(parsed.settings==s&&std::equal(parsed.child.begin(),parsed.child.end(),view.child.begin(),view.child.end()));
         options.reconstruction441=s;check(codec->encode(source,options).data==edited.data);
     }
     // Active reconstruction must change this damaged diagonal; controls are not cosmetic.
     auto raw=source.pixels;raw[3]=128;auto filtered=raw;Reconstruction441 active;active.strongerTangents=30;reconstruct441(filtered,source.width,source.height,3,1,active);check(filtered!=raw);
+    {
+        auto baseline=raw;artifactCleanup(baseline,source.width,source.height,1,0,2);
+        bool toleranceChanges=false,sizeChanges=false;
+        for(uint32_t percent:{25u,50u,150u,200u})for(bool tolerance:{false,true}){
+            ContourTuning tuning;if(tolerance)tuning.tolerance=percent;else tuning.minimumSize=percent;
+            auto a=raw,b=raw;
+            artifactCleanup(a,source.width,source.height,1,0,2,256,tuning);
+            artifactCleanup(b,source.width,source.height,3,0,2,256,tuning);
+            check(a==b&&a[3]==raw[3]);
+            if(tolerance)toleranceChanges|=a!=baseline;else sizeChanges|=a!=baseline;
+        }
+        check(toleranceChanges&&sizeChanges); // Both controls affect actual reconstruction.
+    }
     auto single=raw;reconstruct441(single,source.width,source.height,1,1,active);check(single==filtered);check(std::equal(raw.begin(),raw.begin()+4,filtered.begin()));
+    {
+        auto fixed=active;fixed.fixedIntensity=true;fixed.antialias=fixed.contrast=0;
+        auto reference=raw;reconstruct441(reference,source.width,source.height,1,1,fixed);
+        check(reference!=raw);
+        for(uint32_t budget:{30000u,80000u,200000u}){
+            auto actual=raw;reconstruct441(actual,source.width,source.height,3,budget,fixed);
+            check(actual==reference); // No hidden density fade in manual mode.
+        }
+    }
     // High coded density must no longer silently disable the contour control.
     for(uint32_t cap:{30000u,80000u,150000u,300000u}){auto p=raw;reconstruct441(p,source.width,source.height,3,cap,active);check(p!=raw&&std::equal(raw.begin(),raw.begin()+4,p.begin()));
         auto disabled=active;disabled.intensity=disabled.antialias=disabled.contrast=0;auto unchanged=raw;reconstruct441(unchanged,source.width,source.height,3,cap,disabled);check(unchanged==raw);}
@@ -265,6 +308,8 @@ int main(){try{
     auto bad=packet;bad.data.pop_back();rejected([&]{codec->decode(bad,source.width,source.height);});
     bad=packet;bad.data[reconstruction441HeaderBytes+4]=reconstruction441Version;rejected([&]{codec->decode(bad,source.width,source.height);});
     auto invalid=active;invalid.strongerTangents=101;rejected([&]{update441(bad,invalid);});
+    invalid=active;invalid.shapes.tolerance=24;rejected([&]{update441(bad,invalid);});
+    invalid=active;invalid.shapes.minimumSize=201;rejected([&]{update441(bad,invalid);});
     // Exercise deferred upscale, reused native storage, disabled identity and
     // caller buffers on an image large enough to take the low-rate path.
     Frame scaled{1297,769,17,23,Bytes(pixelBytes(1297,769),255)};

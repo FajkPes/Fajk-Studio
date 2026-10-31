@@ -165,6 +165,16 @@ void waveletHistogramAvx2(const float* samples,int width,float inverse,uint32_t 
     }
     for(;x<width;x+=4){const int bin=std::min(8191,int(std::abs(samples[x])*inverse*4));if(bin)histogram[bin]+=rows*std::min(4,width-x);}
 }
+void waveletHistogramDenseAvx2(const float* samples,int width,float inverse,uint32_t* histogram){
+    const auto factor=_mm256_set1_ps(inverse*4),sign=_mm256_set1_ps(-0.f);const auto limit=_mm256_set1_epi32(8191);int x=0;
+    for(;x+8<=width;x+=8){const auto values=_mm256_andnot_ps(sign,_mm256_loadu_ps(samples+x));
+        const auto bins=_mm256_min_epi32(limit,_mm256_cvttps_epi32(_mm256_mul_ps(values,factor)));
+        if(_mm256_testz_si256(bins,bins))continue;
+        alignas(32) int indices[8];_mm256_store_si256(reinterpret_cast<__m256i*>(indices),bins);
+        for(int i=0;i<8;++i)if(indices[i])++histogram[indices[i]];
+    }
+    for(;x<width;++x){const int bin=std::min(8191,int(std::abs(samples[x])*inverse*4));if(bin)++histogram[bin];}
+}
 bool waveletQuantize16Avx2(const float* samples,float inverse,int* output,float rounding){
     const auto scale=_mm256_set1_ps(inverse),sign=_mm256_set1_ps(-0.f),bias=_mm256_set1_ps(rounding);
     const auto a=_mm256_mul_ps(_mm256_loadu_ps(samples),scale),b=_mm256_mul_ps(_mm256_loadu_ps(samples+8),scale);

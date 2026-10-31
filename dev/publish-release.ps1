@@ -1,7 +1,7 @@
 ﻿param([Parameter(Mandatory=$true)][string]$BuildDirectory, [string]$PackageDirectory="", [switch]$SkipStartupCheck)
 $ErrorActionPreference='Stop'
 $workspaceRoot=(Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path.TrimEnd('\')
-$packageRoot=if($PackageDirectory){[IO.Path]::GetFullPath($PackageDirectory)}else{Join-Path $workspaceRoot 'release\R500'}
+$packageRoot=if($PackageDirectory){[IO.Path]::GetFullPath($PackageDirectory)}else{Join-Path $workspaceRoot 'release\R600.4'}
 $releaseRoot=Join-Path $packageRoot 'app'
 $stageRoot=Join-Path $PSScriptRoot ('.release-stage-'+[guid]::NewGuid().ToString('N'))
 $backupRoot=Join-Path $PSScriptRoot ('.release-backup-'+[guid]::NewGuid().ToString('N'))
@@ -35,8 +35,65 @@ $priorSettings=Join-Path $workspaceRoot 'release\R480\settings.ini'
 if($packageRoot -eq (Join-Path $workspaceRoot 'release\R500')){$priorSettings=Join-Path $workspaceRoot 'release\R490\settings.ini'}
 if(!(Test-Path -LiteralPath $priorSettings)){$priorSettings=Join-Path $workspaceRoot 'release\R470\settings.ini'}
 if(!(Test-Path -LiteralPath $priorSettings)){$priorSettings=Join-Path $workspaceRoot 'release\R465\settings.ini'}
+if($packageRoot -in @((Join-Path $workspaceRoot 'release\R510'),(Join-Path $workspaceRoot 'release\R520'))){$priorSettings=Join-Path $workspaceRoot 'release\R500\settings.ini'}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R550')){$priorSettings=Join-Path $workspaceRoot 'release\R520\settings.ini'}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R560')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R550\settings.ini'
+  if(!(Test-Path -LiteralPath $priorSettings)){$priorSettings=Join-Path $workspaceRoot 'release\R520\settings.ini'}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R560-P1')){
+  foreach($priorEdition in @('R560','R550','R520')){
+    $priorCandidate=Join-Path $workspaceRoot ('release\'+$priorEdition+'\settings.ini')
+    if(Test-Path -LiteralPath $priorCandidate){$priorSettings=$priorCandidate;break}
+  }
+}
 $newSettings=Join-Path $packageRoot 'settings.ini'
-if($packageRoot -in @((Join-Path $workspaceRoot 'release\R490'),(Join-Path $workspaceRoot 'release\R500')) -and !(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R600.4')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R600.3\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R600.3')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R600.2\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R600.2')){
+  foreach($priorEdition in @('R600.1','R600','R590.1')){
+    $priorCandidate=Join-Path $workspaceRoot ('release\'+$priorEdition+'\settings.ini')
+    if(Test-Path -LiteralPath $priorCandidate){$priorSettings=$priorCandidate;break}
+  }
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R600.1')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R600\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R600')){
+  foreach($priorEdition in @('R590.1','R590','R580')){
+    $priorCandidate=Join-Path $workspaceRoot ('release\'+$priorEdition+'\settings.ini')
+    if(Test-Path -LiteralPath $priorCandidate){$priorSettings=$priorCandidate;break}
+  }
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R590.1')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R590\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R590')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R580\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R580')){
+  $priorSettings=Join-Path $workspaceRoot 'release\R570\settings.ini'
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -eq (Join-Path $workspaceRoot 'release\R570')){
+  foreach($priorEdition in @('R560-P1','R560','R550')){
+    $priorCandidate=Join-Path $workspaceRoot ('release\'+$priorEdition+'\settings.ini')
+    if(Test-Path -LiteralPath $priorCandidate){$priorSettings=$priorCandidate;break}
+  }
+  if(!(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
+}
+if($packageRoot -in @((Join-Path $workspaceRoot 'release\R490'),(Join-Path $workspaceRoot 'release\R500'),(Join-Path $workspaceRoot 'release\R510'),(Join-Path $workspaceRoot 'release\R520'),(Join-Path $workspaceRoot 'release\R550'),(Join-Path $workspaceRoot 'release\R560'),(Join-Path $workspaceRoot 'release\R560-P1')) -and !(Test-Path -LiteralPath $newSettings) -and (Test-Path -LiteralPath $priorSettings)){Copy-Item -LiteralPath $priorSettings -Destination $newSettings}
 if($packageRoot -eq (Join-Path $workspaceRoot 'release\R500') -and (Test-Path -LiteralPath $newSettings)){
   $r500Settings=Get-Content -LiteralPath $newSettings -Raw
   if($r500Settings -notmatch '(?m)^defaultsVersion=500\s*$'){

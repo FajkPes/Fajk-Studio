@@ -52,19 +52,21 @@ CpuWork cpuWork(){FILETIME creation,exit,kernel,user;CpuWork result;
     QueryProcessCycleTime(GetCurrentProcess(),&result.cycles);return result;
 }
 void help() {
-    std::cout << "Fajk Studio R500 / R500 GPU\n"
+    std::cout << "Fajk Studio R600.4 / R600.4 GPU\n"
                  "Use --gpu or --cpu with encode, decode, measure and measure-decode.\n"
-                 "Encode speed: --more-quality (default) or --fast; independent of CPU/GPU.\n"
+                 "Encode speed: --more-quality (default), --fast or --fast-max (Fast-based Max compression); independent of CPU/GPU.\n"
                  "AQ: --enable-aq / --no-aq (default off); --aq N controls strength only. Text protection defaults off.\n"
-                 "Video: --temporal [--keyframe-interval N], 0 disables age refresh; changes in <=1% of pixels defer refresh.\n"
+                 "Video: --temporal [--keyframe-interval N], 0 disables the frame-age limit; changes refresh within 5 s, exact repeats can hold indefinitely.\n"
                  "Optional similar regions: --similar-tolerance 0..16 --similar-hold 1..120 (default 0/off, 10 frames).\n"
+                 "Lossless interframe recoding: --temporal-coefficients (identical pixels, <=16 dependencies, static repeats are direct; similarity tolerance must be 0).\n"
+                 "Max compression: --temporal-max [--similar-tolerance 0..16] (default 6), --similar-hold 1..120; source-checked GPU block/affine motion, bounded residuals and exact coefficient fallback when motion quality fails.\n"
                  "encode INPUT [OUTPUT.fajk|OUTPUT.fajkv] [--quality 85] [--target-bytes BYTES | --no-target] "
                  "[--420|--422|--444] [--lossless] [--no-aq] [--workers N] [--overwrite]\n"
                  "  --r460-intensity 0-200 --stronger-tangents 0-100 --antialias 0-100 --contour-contrast 0-100 "
                  "--r460-style 0|1 --protect-text 0|1\n"
                  "  --contour-intensity 0-200 --shape-intensity 0-200 --aq 0-1000 --allocation-strength 0-500 "
                  "--flat-allocation 0-100 --flat-savings 0-500 --flat-threshold 0-100 --color-edge-priority 0-500\n"
-                 "decode INPUT FRAME OUTPUT.png [--workers N] [--deblock 0-100] [--sharpen 0-100]\n"
+                 "decode INPUT FRAME OUTPUT.png [--workers N] [--deblock 0-100] [--sharpen 0-200]\n"
                  "info INPUT | hardware | encoders\n"
                  "inspect-frame INPUT PREFIX [LEFT=0] [RIGHT=2] [GAIN=1] [FRAME=0] (debug PNG/report)\n"
                  "inspect-compression INPUT  (uniform mode-23 band report)\n"
@@ -72,8 +74,8 @@ void help() {
                  "inspect-allocation INPUT PREFIX TARGET_BYTES CONTRAST [compare0 [STRENGTH [AQ_ENABLED [THRESHOLD]]]]\n"
                  "measure-decode INPUT PREFIX REPEATS [WORKERS] [buffer]\n"
                  "measure INPUT PREFIX QUALITY REPEATS [420|422|444] [WORKERS] [DEBLOCKING] [wavelet] [TARGET_BYTES] "
-                 "[SHARPENING] [r500|r500-buffer] [FLAT_ALLOCATION_0_100] [AQ_ENABLED_0_1] [FLAT_SAVINGS_0_100] [FLAT_THRESHOLD_0_100] [RECONSTRUCTION_INI]\n"
-                 "R500 uses CPU/AVX2 or GPU reconstruction and optional temporal corrections. "
+                 "[SHARPENING] [r590|r590-buffer] [FLAT_ALLOCATION_0_100] [AQ_ENABLED_0_1] [FLAT_SAVINGS_0_100] [FLAT_THRESHOLD_0_100] [RECONSTRUCTION_INI]\n"
+                 "R600.4 uses CPU/AVX2 or GPU reconstruction and optional temporal corrections. "
                  "Default base sharpening is 0.\n";
 }
 } // namespace
@@ -89,9 +91,10 @@ int wmain(int argc, wchar_t** argv) {
         EncodeSpeed speed=EncodeSpeed::MoreQuality;
         int remaining=2;
         for(int i=2;i<argc;++i){const std::wstring key=argv[i];
-            if(key==L"--gpu"||key==L"--r470-gpu"||key==L"--r480-gpu"||key==L"--r490-gpu"||key==L"--r500-gpu")backend=ComputeBackend::Gpu;
+            if(key==L"--gpu"||key==L"--r470-gpu"||key==L"--r480-gpu"||key==L"--r490-gpu"||key==L"--r500-gpu"||key==L"--r510-gpu"||key==L"--r520-gpu"||key==L"--r550-gpu"||key==L"--r560-gpu"||key==L"--r570-gpu"||key==L"--r580-gpu"||key==L"--r590-gpu"||key==L"--r600-gpu")backend=ComputeBackend::Gpu;
             else if(key==L"--cpu")backend=ComputeBackend::Cpu;
             else if(key==L"--fast")speed=EncodeSpeed::Fast;
+            else if(key==L"--fast-max")speed=EncodeSpeed::MaxCompression;
             else if(key==L"--more-quality")speed=EncodeSpeed::MoreQuality;
             else argv[remaining++]=argv[i];}
         argc=remaining;
@@ -99,6 +102,7 @@ int wmain(int argc, wchar_t** argv) {
         if (command == L"encode") {
             require(argc >= 3, "Missing input.");
             ConvertOptions options;
+            bool toleranceSpecified=false;
             options.encode.backend=backend;
             options.encode.speed=speed;
             options.targetIncludesContainer = true;
@@ -106,14 +110,16 @@ int wmain(int argc, wchar_t** argv) {
             const bool explicitOutput = argc > 3 && std::wstring(argv[3]).rfind(L"--", 0) != 0;
             for (int i = explicitOutput ? 4 : 3; i < argc; ++i) {
                 const std::wstring key = argv[i];
-                if (key == L"--r441" || key == L"--r450" || key == L"--r460" || key == L"--r461" || key == L"--r462" || key == L"--r464" || key == L"--r465" || key == L"--r470" || key == L"--r480" || key == L"--r490" || key == L"--r500")
+                if (key == L"--r441" || key == L"--r450" || key == L"--r460" || key == L"--r461" || key == L"--r462" || key == L"--r464" || key == L"--r465" || key == L"--r470" || key == L"--r480" || key == L"--r490" || key == L"--r500" || key == L"--r510" || key == L"--r520" || key == L"--r550" || key == L"--r560" || key == L"--r570" || key == L"--r580" || key == L"--r590" || key == L"--r600")
                     continue;
                 if (key == L"--overwrite") {
                     options.replace = true;
                     continue;
                 }
-                if(key==L"--temporal"){options.temporal=true;continue;}
-                if(key==L"--intra-only"){options.temporal=false;continue;}
+                if(key==L"--temporal"){options.temporal=true;options.coefficientTemporal=false;options.maxCompressionTemporal=false;continue;}
+                if(key==L"--temporal-coefficients"){options.temporal=true;options.coefficientTemporal=true;options.maxCompressionTemporal=false;continue;}
+                if(key==L"--temporal-max"){options.temporal=true;options.coefficientTemporal=false;options.maxCompressionTemporal=true;if(!toleranceSpecified)options.similarTolerance=6;continue;}
+                if(key==L"--intra-only"){options.temporal=false;options.coefficientTemporal=false;options.maxCompressionTemporal=false;continue;}
                 if (key == L"--enable-aq") { options.encode.adaptiveQuantizationEnabled=true;continue; }
                 if (key == L"--no-aq") {
                     options.encode.adaptiveQuantizationEnabled = false;
@@ -151,8 +157,8 @@ int wmain(int argc, wchar_t** argv) {
                     options.every = value;
                 else if(key==L"--keyframe-interval")
                     options.keyframeInterval=value;
-                else if(key==L"--similar-tolerance")
-                    options.similarTolerance=value;
+                else if(key==L"--similar-tolerance"){
+                    options.similarTolerance=value;toleranceSpecified=true;}
                 else if(key==L"--similar-hold")
                     options.similarHoldFrames=value;
                 else if (key == L"--max-frames")
@@ -193,7 +199,7 @@ int wmain(int argc, wchar_t** argv) {
             }
             Path output = explicitOutput
                               ? Path(argv[3])
-                              : Path(argv[2]).parent_path() / (Path(argv[2]).stem().wstring() + L"_R500.fajk");
+                              : Path(argv[2]).parent_path() / (Path(argv[2]).stem().wstring() + L"_R600.4.fajk");
             const auto progress = convert(argv[2], output, options, cancellation.get_token());
             std::cout << "Saved " << progress.frames << " frames, " << progress.bytes << " bytes\n";
         } else if (command == L"decode") {
@@ -275,7 +281,7 @@ int wmain(int argc, wchar_t** argv) {
             if(i.temporal){uint64_t keys=0;for(const auto& entry:reader.index())keys+=entry.reference==0;
                 std::cout<<"Temporal: "<<keys<<" keyframes, "<<i.count-keys<<" delta/repeat frames\n";}
         } else if (command == L"encoders") {
-            std::cout << "56 r500 R500 CPU\n56 r500-gpu R500 GPU (--gpu, R470-compatible intra packets; temporal corrections require R500)\n";
+            std::cout << "56 r600 R600.4 CPU\n56 r600-gpu R600.4 GPU (--gpu; use the supplied decoder for temporal video)\n";
         } else if (command == L"hardware") {
             const auto h = hardwareInfo();
             std::cout << h.physical << " physical / " << h.logical << " logical cores, " << h.safeMiB
@@ -404,7 +410,7 @@ int wmain(int argc, wchar_t** argv) {
         } else if (command == L"measure") {
             require(argc >= 6 && argc <= 18,
                     "measure INPUT PREFIX QUALITY REPEATS [420|422|444] [WORKERS] [DEBLOCKING] "
-                    "[wavelet] [TARGET_BYTES] [SHARPENING] [r500|r500-buffer] [FLAT_ALLOCATION_0_100] [AQ_ENABLED_0_1] [FLAT_SAVINGS_0_100] [FLAT_THRESHOLD_0_100] [RECONSTRUCTION_INI]");
+                    "[wavelet] [TARGET_BYTES] [SHARPENING] [r590|r590-buffer] [FLAT_ALLOCATION_0_100] [AQ_ENABLED_0_1] [FLAT_SAVINGS_0_100] [FLAT_THRESHOLD_0_100] [RECONSTRUCTION_INI]");
             auto source = readImage(argv[2]);
             Path prefix = argv[3];
             EncodeOptions o;
@@ -421,14 +427,22 @@ int wmain(int argc, wchar_t** argv) {
             const auto deblock = argc >= 9 ? integer(argv[8]) : 100, sharpen = argc >= 12 ? integer(argv[11]) : 0;
             require(argc < 10 || std::wstring(argv[9]) == L"wavelet", "Only current wavelet is supported.");
             o.targetBytes = argc >= 11 ? integer(argv[10]) : 0;
-            std::wstring profile = argc >= 13 ? argv[12] : L"r500";
+            std::wstring profile = argc >= 13 ? argv[12] : L"r600";
             // R500 keeps the established independent-frame measurement paths.
+            if(profile.rfind(L"r600",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r590",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r580",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r570",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r560",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r550",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r520",0)==0)profile.replace(0,4,L"r490");
+            if(profile.rfind(L"r510",0)==0)profile.replace(0,4,L"r490");
             if(profile.rfind(L"r500",0)==0)profile.replace(0,4,L"r490");
             require(profile == L"r441" || profile == L"r441-buffer" || profile == L"r450" ||
                         profile == L"r450-buffer" || profile == L"r460" || profile == L"r460-buffer" ||
                         profile == L"r461" || profile == L"r461-buffer" || profile == L"r462" ||
                         profile == L"r462-buffer" || profile == L"r464" || profile == L"r464-buffer" || profile == L"r465" || profile == L"r465-buffer" || profile == L"r470" || profile == L"r470-buffer" || profile == L"r470-gpu" || profile == L"r470-gpu-buffer" || profile == L"r480" || profile == L"r490" || profile == L"r480-buffer" || profile == L"r490-buffer" || profile == L"r480-gpu" || profile == L"r490-gpu" || profile == L"r480-gpu-buffer" || profile == L"r490-gpu-buffer",
-                    "Only the current R500 / R470 / R441 packet family is supported.");
+                    "Only the current R600.4 / R500 / R470 / R441 packet family is supported.");
             if(profile==L"r470-gpu"||profile==L"r470-gpu-buffer"||profile==L"r480-gpu"||profile==L"r490-gpu"||profile==L"r480-gpu-buffer"||profile==L"r490-gpu-buffer"){backend=ComputeBackend::Gpu;o.backend=backend;}
             o.flatAllocation = argc >= 14 ? integer(argv[13]) : 50;
             require(o.flatAllocation <= 100, "Flat allocation must be 0-100.");

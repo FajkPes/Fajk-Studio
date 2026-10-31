@@ -7,12 +7,14 @@
 #include "../src/frame_pool.hpp"
 #include "../src/perceptual_color.hpp"
 #include "../src/guided_chroma.hpp"
+#include "../src/spatial.hpp"
 #include "color_prediction_fit_tests.hpp"
 #include <iostream>
 #include <random>
 #include <source_location>
 #include <atomic>
 #include <thread>
+#include <future>
 using namespace fajk;
 namespace fajk {void waveletColumnRangeAvx2(float*,float*,int,int,int,int,int,bool);bool hasAvx2();uint32_t gammaByteRowAvx2(const float*,uint32_t,uint32_t*);void spatialRateCoupling8Avx2(const float*,int,const float*,double&);}
 namespace {
@@ -42,6 +44,22 @@ Frame fixture(uint32_t w, uint32_t h, bool alpha = false) {
 } // namespace
 int main() {
     try {
+        for(auto [w,h]:{std::pair{1,1},std::pair{7,9},std::pair{31,17},std::pair{129,65}})for(bool prediction:{false,true}){
+            const int stride=w+3,outputStride=w+5;const float step=1.25f;
+            std::vector<float> values(size_t(stride)*h,0),output(size_t(outputStride)*h+16,197.f);
+            // Sparse band decoding writes occupied coefficients into a cleared
+            // plane; row padding and outer guards must remain untouched.
+            for(int y=0;y<h;++y)std::fill_n(output.data()+8+size_t(y)*outputStride,w,0.f);
+            for(int y=0;y<h;++y)for(int x=0;x<w;++x)values[size_t(y)*stride+x]=(int((x*31+y*43)%129)-64)*step;
+            const auto coded=encodeSpatialBand(values.data(),stride,w,h,step,prediction,.5f,false,0,true,0,true,true,.02f,nullptr,0,nullptr,0,33);
+            decodeSpatialBand(coded,output.data()+8,outputStride,w,h,step,false,prediction,false,false,true,true,nullptr,0,33);
+            for(int y=0;y<h;++y){for(int x=0;x<w;++x)check(output[8+size_t(y)*outputStride+x]==values[size_t(y)*stride+x]);
+                for(int x=w;x<outputStride;++x)check(output[8+size_t(y)*outputStride+x]==197.f);}
+            for(int i=0;i<8;++i)check(output[i]==197.f&&output[output.size()-1-i]==197.f);
+            rejected([&]{decodeSpatialBand(coded,output.data()+8,outputStride,w,h,step,false,prediction,false,true,true,true,nullptr,0,33);});
+            auto malformed=coded;malformed[0]=6;
+            rejected([&]{decodeSpatialBand(malformed,output.data()+8,outputStride,w,h,step,false,prediction,false,false,true,true,nullptr,0,33);});
+        }
         testInterpolatedChroma([](bool value){check(value);});
         if(hasAvx2()){
             std::mt19937 random(490);
@@ -117,6 +135,10 @@ int main() {
             auto reused=pool.acquire(17,23,37,41);
             check(reused->pixels.data()==address&&reused->pts==37&&reused->duration==41);
             auto resized=pool.acquire(19,29,0,1);resized->validate();
+            // DCI 4K exceeds the old per-image 32 MiB cutoff. Retain one
+            // within the same aggregate 64 MiB ceiling instead of none.
+            FramePool largePool;auto large=largePool.acquire(4096,2160,0,1);const auto largeAddress=large->pixels.data();large.reset();
+            auto largeAgain=largePool.acquire(4096,2160,1,1);check(largeAgain->pixels.data()==largeAddress);
         }
         if(hasAvx2()){
             // Independent scalar lifting oracle covers fused inverse-column
@@ -264,17 +286,17 @@ int main() {
         }
         // Fast changes quantization decisions, not frame/alpha semantics or
         // strict size caps. Worker count must not change its bitstream.
-        for(bool aq:{false,true})for(bool subsample:{false,true}){
+        for(auto speed:{EncodeSpeed::Fast,EncodeSpeed::MaxCompression})for(bool aq:{false,true})for(bool subsample:{false,true}){
             auto fastSource=fixture(129,131);
-            EncodeOptions fast;fast.speed=EncodeSpeed::Fast;fast.quality=100;
+            EncodeOptions fast;fast.speed=speed;fast.quality=100;
             fast.targetBytes=5000;fast.threads=1;fast.chroma420=subsample;fast.adaptiveQuantizationEnabled=aq;
             const auto first=codec->encode(fastSource,fast);check(first.data.size()<=fast.targetBytes);
             fast.threads=3;check(codec->encode(fastSource,fast).data==first.data);
             auto image=codec->decode(first,fastSource.width,fastSource.height);
             image.validate();check(image.pts==fastSource.pts&&image.duration==fastSource.duration);
         }
-        {
-            auto fastAlpha=fixture(65,67,true);EncodeOptions fast;fast.speed=EncodeSpeed::Fast;
+        for(auto speed:{EncodeSpeed::Fast,EncodeSpeed::MaxCompression}){
+            auto fastAlpha=fixture(65,67,true);EncodeOptions fast;fast.speed=speed;
             fast.quality=100;fast.targetBytes=12000;fast.threads=2;
             auto packet=codec->encode(fastAlpha,fast);check(packet.data.size()<=fast.targetBytes);
             auto image=codec->decode(packet,65,67);
@@ -317,6 +339,23 @@ int main() {
             rejected([&] { reader.read(1); });
         }
         std::filesystem::remove(path);
+        if(workerLimit()>=2){
+            const auto budget=std::min(10u,workerLimit());SharedWorkerBudget shared(budget,2);
+            std::atomic_uint32_t live=0,peak=0,visits=0,ready=0;
+            auto caller=[&]{ScopedSharedWorkerBudget binding(&shared);ScopedWorkerBudget ceiling(budget);
+                ++ready;while(ready<2)std::this_thread::yield();
+                for(unsigned round=0;round<24;++round)parallelFor(2,budget,[&](uint32_t){parallelFor(16,budget,[&](uint32_t){
+                    const auto count=++live;auto old=peak.load();while(old<count&&!peak.compare_exchange_weak(old,count)){}
+                    std::this_thread::yield();--live;++visits;
+                });});
+            };
+            auto first=std::async(std::launch::async,caller),second=std::async(std::launch::async,caller);first.get();second.get();
+            check(visits==2*24*2*16&&live==0&&peak>=2&&peak<=budget);
+            ScopedSharedWorkerBudget binding(&shared);ScopedWorkerBudget ceiling(budget);
+            rejected([&]{parallelFor(32,budget,[&](uint32_t n){if(n==3)throw std::runtime_error("shared worker error");});});
+            std::atomic_uint32_t recovered=0;parallelFor(64,budget,[&](uint32_t){++recovered;});check(recovered==64);
+            rejected([&]{SharedWorkerBudget invalid(1,2);});
+        }
         std::cout << "PASS current R441: lossless RGBA/palette, alpha, strict budgets, guarded decode and thread "
                      "equality, entropy, timestamps, container and validation.\n";
         return 0;

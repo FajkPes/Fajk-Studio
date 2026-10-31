@@ -238,6 +238,7 @@ DebugInspection inspectPacket(PacketView packet, uint32_t width, uint32_t height
     };
     auto data = packet.data;
     uint32_t iw = width, ih = height, tile = 64, budget = uint32_t(packet.data.size()), contours = 200, surfaces = 0;
+    ContourTuning shapes;
     Bytes map, flat;
     uint32_t flatWidth = 0, flatHeight = 0;
     bool native = false;
@@ -249,6 +250,7 @@ DebugInspection inspectPacket(PacketView packet, uint32_t width, uint32_t height
         if (version == 130) {
             const auto v = read441(data, iw, ih);
             budget = v.budget;
+            shapes=v.settings.shapes;
             section("R441 reconstruction header", data.first(data.size() - v.child.size()));
             data = v.child;
         } else if (version == 129) {
@@ -442,7 +444,7 @@ DebugInspection inspectPacket(PacketView packet, uint32_t width, uint32_t height
             const auto rate = artifactReconstruction::rateStrength(budget, width, height);
             const double eq = double(budget) * double(2560 * 1440) / (double(width) * height);
             const auto amount = artifactReconstruction::contourStrength(rate, eq, contours);
-            image = contourEffectMap(low, contourGuideSpacing(rate * surfaces / 100.f, amount), amount, true);
+            image = contourEffectMap(low, contourGuideSpacing(rate * surfaces / 100.f, amount), amount, true,shapes);
         } else if ((view == 10 || view == 11) && !map.empty()) {
             image = {uint32_t((iw + tile - 1) / tile), uint32_t((ih + tile - 1) / tile), 0, 0, {}};
             image.pixels.resize(pixelBytes(image.width, image.height));

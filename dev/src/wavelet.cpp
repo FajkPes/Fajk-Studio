@@ -1,6 +1,9 @@
 #include "wavelet_debug.hpp"
+#include "wavelet_rate_control.hpp"
 #include "adaptive_allocation.hpp"
 #include "wavelet.hpp"
+#include "coefficient_overrides.hpp"
+#include "coefficient_math.hpp"
 #include "gpu_compute.hpp"
 #include "wavelet_adjoint.hpp"
 #include "contrast_loss.hpp"
@@ -29,6 +32,7 @@ namespace fajk {
 bool hasAvx2();
 bool waveletOpaqueAvx2(const uint8_t*, size_t);
 void waveletHistogramAvx2(const float*, int, float, uint32_t, uint32_t*);
+void waveletHistogramDenseAvx2(const float*, int, float, uint32_t*);
 bool waveletQuantize16Avx2(const float*, float, int*, float = .35f);
 uint32_t waveletProxyColorRowAvx2(const float*, const float*, const float*, int, int, uint32_t, uint32_t, bool,
                                   uint32_t, uint8_t*, const float*, const float*, uint8_t);
@@ -332,8 +336,18 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
     const bool lowRate = o.targetBytes && uint64_t(o.targetBytes) * 1000 < uint64_t(f.width) * f.height * 35;
     const bool r12 = true;
     auto r12Profile = resolveWaveletProfile(o.waveletStage, lowRate);
+    // Clean quantization speckles in the subsampled color planes before RGB
+    // reconstruction. Luma/detail are untouched; real color/luma edges stop
+    // the recursive propagation. Stored controls cover intra and video keys.
+    if (lowRate && o.chroma420)
+        r12Profile.guide |= uint8_t((uint64_t(o.targetBytes)*1000<uint64_t(f.width)*f.height*20?2:1)<<6);
     if (lowRate) {
-        r12Profile.chroma = uint8_t(std::max(32, int(r12Profile.chroma) * 3 / 4));
+        r12Profile.chroma = uint8_t(std::max(32, int(r12Profile.chroma) * 3 / 5));
+        // Spatial luma deringing complements color-only denoising without
+        // mixing frames or flattening real chromatic boundaries. The pilot
+        // has no luma strength and needs no extra native restoration pass.
+        r12Profile.strength = r12Profile.lumaStrength ? 24 : 0;
+        r12Profile.planes = 1;
         r12Profile.adaptiveRate *= .5f;
         r12Profile.sourcePriority = 31;
         r12Profile.quantRdo = .01f;
@@ -373,7 +387,7 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
     }
     if (ratePassOverride >= 0)
         r12Profile.ratePasses = ratePassOverride;
-    if(o.speed==EncodeSpeed::Fast){
+    if(fastEncode(o.speed)){
         // Keep source priorities, AQ, reconstruction and the packet syntax.
         // Replace context-priced local precision/RDO with the existing cheap
         // precision estimator and skip optional synthesis pilot corrections.
@@ -381,6 +395,13 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
         r12Profile.quantRdo=0;r12Profile.quantGradient=0;r12Profile.quantCoupling=0;
         r12Profile.synthesisGain=0;r12Profile.approximatePilot=0;r12Profile.reuseSynthesisSource=false;
         r12Profile.ratePasses=1;r12Profile.fitRateCap=true;
+    }
+    if(o.speed==EncodeSpeed::MaxCompression){
+        // Fast's one-pass quantization/search, with better color precision and
+        // the existing specialized coefficient model. No decoder-only pass.
+        const bool dense=o.targetBytes&&uint64_t(o.targetBytes)*1000>=uint64_t(f.width)*f.height*20;
+        // Retain Fast's approved luma/shape preconditioning.
+        r12Profile.entropyMode=o.adaptiveQuantizationEnabled?32:dense?33:23;
     }
     const bool decodedPilot = lowRate && r12Profile.synthesisGain && (r12Profile.adaptive == 0 || r12Profile.adaptive == 3) &&
                               o.waveletStage == WaveletStage::Final;
@@ -812,22 +833,24 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
         suffixCount.fill(0);
         suffixBits.fill(0);
         std::array<std::array<uint32_t, 8192>, 3> histograms{};
+        const bool denseHistogram=waveletRateControl&&waveletRateControl->denseHistogram;
         parallelFor(3, o.threads, [&](uint32_t c) {
             const int pw = c ? cw : w, ph = c ? ch : h;
             bands(pw, ph, [&](int level, int band, int bx, int by, int bw, int bh) {
                 const float bandScale = legacyRate ? quantStep(1, level, band, detail)
                                                    : (band == 2 ? diagonal : 1.f) * std::pow(slope, float(level));
                 const float inverse = 1 / (bandScale * (c ? chromaScale : 1.f));
-                for (int y = by; y < by + bh; y += 2) {
+                for (int y = by; y < by + bh; y += denseHistogram?1:2) {
                     const auto* row = planes[c].data() + size_t(y) * pw + bx;
                     const auto rows = std::min(2, by + bh - y);
-                    if (quantAvx2)
+                    if(denseHistogram&&quantAvx2)waveletHistogramDenseAvx2(row,bw,inverse,histograms[c].data());
+                    else if (quantAvx2)
                         waveletHistogramAvx2(row, bw, inverse, rows, histograms[c].data());
                     else
-                        for (int x = 0; x < bw; x += 4) {
+                        for (int x = 0; x < bw; x += denseHistogram?1:4) {
                             int bin = std::min(8191, int(std::abs(row[x]) * inverse * 4));
                             if (bin)
-                                histograms[c][bin] += rows * std::min(4, bw - x);
+                                histograms[c][bin] += denseHistogram?1:rows * std::min(4, bw - x);
                         }
                 }
             });
@@ -901,6 +924,17 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
             parallelFor(uint32_t(bh), o.threads, [&](uint32_t row) {
                 for (int x = bx; x < bx + bw; ++x)
                     planes[0][size_t(by + row) * w + x] *= 1 + r12Profile.middleBandGain;
+            });
+        });
+    }
+    if(o.speed==EncodeSpeed::MaxCompression&&o.chroma420){
+        // Compensate chroma averaging only on strong color details. Tiny
+        // coefficients keep their original value instead of amplifying noise.
+        for(int c=1;c<3;++c)bands(cw,ch,[&](int level,int,int bx,int by,int bw,int bh){
+            if(level>1)return;
+            parallelFor(uint32_t(bh),o.threads,[&](uint32_t row){
+                auto* values=planes[c].data()+size_t(by+row)*cw+bx;
+                for(int x=0;x<bw;++x){const float weight=std::clamp((std::abs(values[x])-4.f)/12.f,0.f,1.f);values[x]*=1+.125f*weight;}
             });
         });
     }
@@ -1041,11 +1075,15 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
     std::array<std::vector<SpatialTileBound>, 216> cachedBounds;
     const bool detailedSpatialTiming=timingEvents&&std::getenv("FAJK_PROFILE_SPATIAL");
     bool captureActualPilot = decodedPilot;
+    auto* keyCapture=o.waveletStage==WaveletStage::Final&&r12Profile.spatialParts==1&&
+        uint64_t(w)*h+2*uint64_t(cw)*ch<=16*1024*1024?coefficientEncodeCapture:nullptr;
     if(captureActualPilot)synthesisDecoded.assign(planes[0].size(),0.f);
     auto pack = [&](float requestedStep) {
         TimingTimeline packTiming;
         const auto fixed = uint16_t(std::clamp(int(std::round(requestedStep * 16)), 1, 65535));
         const float baseStep = fixed / 16.f;
+        const bool captureKey=keyCapture&&!captureActualPilot&&!partitionedSpatial;
+        if(keyCapture){keyCapture->valid=captureKey;keyCapture->width=f.width;keyCapture->height=f.height;keyCapture->fixedStep=fixed;keyCapture->nativePacket.clear();}
         std::array<ByteWriter, 17> streams;
         std::array<std::vector<uint32_t>, 17> partitions;
         std::array<Bytes, 3> significance;
@@ -1117,7 +1155,7 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
                             rates[size_t(ty / extent) * cols + tx / extent] = factor;
                         }
                 }
-                const bool compact = lowRate && o.waveletStage == WaveletStage::Final && r12Profile.adaptive == 0;
+                const bool compact = lowRate && o.waveletStage == WaveletStage::Final && r12Profile.adaptive == 0 && r12Profile.entropyMode!=33;
                 thread_local std::vector<float> cachedIntegers;
                 std::vector<float> largeIntegers;
                 auto& selectedIntegers =
@@ -1139,7 +1177,7 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
                     level < 4 ? r12Profile.coupledQuantizer : 0, r12Profile.rateQuantizer && level < 4,
                     o.patternSimilarity, rates, r12Profile.entropyMode == 32 ? (level < 4 ? 1 : 2) : 0, bounds,
                     captureBudget ? &budgetCosts[spatialCoding && !partitionedSpatial ? job * 4 : job] : nullptr,
-                    (compact || captureActualPilot || captureBudget) ? &selectedIntegers : nullptr, captureActualPilot,
+                    (compact || captureActualPilot || captureBudget || captureKey) ? &selectedIntegers : nullptr, captureActualPilot,
                     level < int(groupLevels) ? std::span<const float>(groupPriorityRates[(c ? 1 : 0) * 6 + level]) : std::span<const float>{},
                     captureBudget ? &budgetPrecisions[spatialCoding && !partitionedSpatial ? job * 4 : job] : nullptr, flatRateBoost, rateCell(level));
                 if(captureActualPilot&&!c){
@@ -1157,6 +1195,7 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
                 }
                 if (captureBudget)
                     budgetCoefficients[spatialCoding && !partitionedSpatial ? job * 4 : job] = selectedIntegers;
+                if(captureKey)keyCapture->bands[job]=selectedIntegers;
                 out.shortMagnitude = !coded.empty() && coded.front() != 4;
                 if (r5)
                     out.values.var(uint32_t(coded.size()));
@@ -1383,6 +1422,9 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
         if (r12 && r12Profile.enhanced && !lowRate)
             step = std::clamp(step * 1.9f, qualityStep, 4095.f);
     }
+    const bool ratePreference=waveletRateControl&&o.waveletStage==WaveletStage::Final&&rateTarget&&
+        std::isfinite(waveletRateControl->preferredStep)&&waveletRateControl->preferredStep>0;
+    if(ratePreference)step=std::clamp(waveletRateControl->preferredStep,qualityStep,4095.f);
     timing.mark("encode.histogram_rate_estimate");
     auto result = pack(decodedPilot ? step * r12Profile.pilotStepScale : step);
     if (decodedPilot) {
@@ -1428,7 +1470,7 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
                                                                           : 2);
              ++correction) {
             const double ratio = double(result.data.size()) / rateTarget;
-            if (ratio <= 1 && (ratio >= (o.speed==EncodeSpeed::Fast ? .97
+            if (ratio <= 1 && ((ratePreference&&ratio>=std::clamp(waveletRateControl->minimumFill,0.f,1.f)) || ratio >= (fastEncode(o.speed) ? .97
                                          : r5              ? .995
                                          : guidedProfile ? .995
                                          : spatialCoding ? .975
@@ -1642,8 +1684,14 @@ static Packet encodeWaveletImpl(const Frame& f, const EncodeOptions& o, bool all
                 map.bits[size_t(y) * map.cols + x] = float(std::max(0., value));
             }
     }
+    if(waveletRateControl&&o.waveletStage==WaveletStage::Final)waveletRateControl->actualStep=std::clamp(std::round(resultStep*16),1.f,65535.f)/16.f;
     timing.mark("encode.rate_search_including_pack");
     require(result.data.size() <= maxPacket, "Encoded frame exceeds size limit.");
+    if(keyCapture){
+        keyCapture->valid=keyCapture->valid&&result.data.size()>=32&&result.data[4]==114&&
+            keyCapture->fixedStep==uint32_t(result.data[16]|(uint32_t(result.data[17])<<8));
+        if(keyCapture->valid)keyCapture->nativePacket=result.data;
+    }
     if (sourceOutput) {
         sourceOutput->transformed = std::move(planes);
         sourceOutput->alpha = std::move(alpha);
@@ -1693,7 +1741,7 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
     const uint8_t nativeFilterCode = input.u8();
     const uint8_t nativeFilterPlanes = nativeFilterCode & 3;
     uint8_t nativeLumaCleanup = nativeFilterCode >> 2;
-    const uint8_t nativeChromaCleanup = nativeGuide >> 6;
+    const uint8_t nativeChromaCleanup = nativeFilterStrength ? nativeGuide >> 6 : 0;
     nativeGuide &= 63;
     require(nativeStrength <= 64 && nativeGuide <= 32 && nativeLumaCleanup <= 14 && nativeFilterPlanes >= 1 &&
                 nativeFilterPlanes <= 3,
@@ -1708,8 +1756,9 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
     require(adaptiveQuantizer == 0 || adaptiveQuantizer == 3, "Invalid adaptive quantizer.");
     const uint8_t entropyCode = input.u8(), entropyMode = entropyCode & 63;
     const unsigned partitionCode = entropyCode & 192;
-    require((entropyMode == 23 || entropyMode == 24 || entropyMode == 31 || entropyMode == 32) && partitionCode == 0,
+    require((entropyMode == 23 || entropyMode == 24 || entropyMode == 31 || entropyMode == 32 || entropyMode == 33) && partitionCode == 0,
             "Unsupported retired coefficient mode.");
+    require(entropyMode!=33||adaptiveQuantizer==0,"Uniform coefficient model cannot declare adaptive precision.");
     constexpr int nativeParts = 1;
     const uint8_t colorSpace = input.u8();
     require(colorSpace == 2, "Unsupported retired color space.");
@@ -1842,6 +1891,8 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
     });
     timing.mark("decode.layout_dc");
     const bool wholeBands = (version == 29 || version == 40) && nativeParts == 1;
+    const auto* coefficientOverride=coefficientBandOverrides;
+    if(coefficientOverride)require(coefficientOverride->width==width&&coefficientOverride->height==height,"Coefficient override dimensions differ.");
     auto decodeBand = [&](uint32_t job) {
         const uint32_t viewIndex = wholeBands ? job * 4 : job;
         const int index = wholeBands      ? job
@@ -1863,6 +1914,15 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
                   offset = !wholeBands && version >= 16 ? int(job % 4) * rows : 0;
         if (offset >= bh)
             return;
+        if(coefficientOverride&&coefficientOverride->active[index]){
+            const auto& values=coefficientOverride->integers[index];require(values.size()==size_t(bw)*bh,"Coefficient override band size differs.");
+            const bool bias=detail&&!(flags&32);
+            auto* output=data.data()+size_t(by)*pw+bx;
+            if(hasAvx2())restoreCoefficientBandAvx2(values.data(),output,pw,bw,bh,step,bias);
+            else for(int y=0;y<bh;++y)for(int x=0;x<bw;++x){const float value=values[size_t(y)*bw+x];
+                output[size_t(y)*pw+x]=value?(bias?value+std::copysign(.15f,value):value)*step:0.f;}
+            return;
+        }
         for (int y = offset; y < std::min(bh, offset + rows); ++y)
             std::fill_n(data.data() + size_t(by + y) * pw + bx, bw, 0.f);
         if ((version == 29 || version == 40) && views[viewIndex].values.empty())
@@ -1935,11 +1995,11 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
     std::array<GpuPlane,3> gpuPlanes{{{planes[0],uint32_t(w),uint32_t(h)},
         {planes[1],uint32_t(cw),uint32_t(ch)},{planes[2],uint32_t(cw),uint32_t(ch)}}};
     if constexpr(!debug) {
-        if(computeBackend()==ComputeBackend::Gpu&&!nativeChromaCleanup&&!lumaOnly&&!lumaOutput&&opaque&&predictor.empty()&&flatMap.empty()&&!sharpening&&(cflMap.empty()||cflCentered)){
+        if(computeBackend()==ComputeBackend::Gpu&&!lumaOnly&&!lumaOutput&&opaque&&predictor.empty()&&flatMap.empty()&&!sharpening&&(cflMap.empty()||cflCentered)){
             require(storage[16].empty(),"Opaque wavelet has an alpha stream.");
             Frame result{width,height,packet.pts,packet.duration,destination.empty()?Bytes(pixelBytes(width,height)):Bytes{}};
             const auto output=destination.empty()?std::span(result.pixels):destination;
-            GpuNativeSettings settings{width,height,smoothing,nativeGuide,cflTile,chroma420,chroma422,cflMap,nativeLumaCleanup,nativeStrength,lumaStrength,nativeFilterPlanes};
+            GpuNativeSettings settings{width,height,smoothing,nativeGuide,cflTile,chroma420,chroma422,cflMap,nativeLumaCleanup,nativeStrength,lumaStrength,nativeFilterPlanes,nativeChromaCleanup,nativeFilterStrength};
             if(gpuDecodeNative(gpuPlanes,settings,output)){timing.mark("decode.gpu_native");return result;}
         }
     }
@@ -2065,7 +2125,7 @@ static Frame decodeWaveletImpl(PacketView packet, uint32_t width, uint32_t heigh
         });
         if (nativeChromaCleanup) {
             recursiveChromaCleanup(planes[1], planes[2], guides, cw, int((width + 1) / 2), int((height + 1) / 2),
-                                   threads, nativeChromaCleanup);
+                                   threads, nativeChromaCleanup, true, nativeFilterStrength / 100.f);
             timing.mark("decode.recursive_chroma_cleanup");
         }
         if (!fusedNativeGuide) {

@@ -25,7 +25,7 @@
             <Button x:Name="EncoderHelp" Grid.Column="1" Content="?" Width="32" Height="32" Padding="0" ToolTipService.ToolTip="Popis a přehled enkodérů" AutomationProperties.Name="Informace o enkodéru"/>
           </Grid>
           <TextBlock x:Name="EncoderSummary" Visibility="Collapsed"/>
-          <ComboBox x:Name="EncodeSpeed" Header="Režim komprese" HorizontalAlignment="Stretch" SelectedIndex="0" AutomationProperties.Name="Režim komprese" ToolTipService.ToolTip="More quality: důkladnější hledání kvality při zvolené velikosti. Fast: výrazně rychlejší komprese, jemné detaily mohou být při stejné velikosti mírně horší. Výběr platí pro fotky i video, nezávisle na CPU/GPU."><ComboBoxItem Content="More quality"/><ComboBoxItem Content="Fast"/></ComboBox>
+          <ComboBox x:Name="EncodeSpeed" Header="Režim komprese" HorizontalAlignment="Stretch" SelectedIndex="0" AutomationProperties.Name="Režim komprese" ToolTipService.ToolTip="More quality: důkladnější hledání kvality při zvolené velikosti. Fast: výrazně rychlejší komprese, jemné detaily mohou být při stejné velikosti mírně horší. Max komprese: základ Fast s přesnějšími barvami a úspornějším ukládáním detailů. Výběr platí pro fotky i video, nezávisle na CPU/GPU."><ComboBoxItem Content="More quality"/><ComboBoxItem Content="Fast"/><ComboBoxItem Content="Max komprese · Fast"/></ComboBox>
           <TextBlock x:Name="ComputeStatus" Visibility="Collapsed" TextWrapping="Wrap" FontSize="11" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
           <Grid><TextBlock Text="Úroveň kvality"/><TextBlock x:Name="QualityValue" Text="65 / 100" HorizontalAlignment="Right"/></Grid>
           <Slider x:Name="Quality" Minimum="1" Maximum="100" Value="65" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Kvalita komprese"/>
@@ -36,9 +36,11 @@
           <Expander x:Name="ContourControls" Header="Vyhlazení obrazu" IsExpanded="True" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
             <StackPanel Spacing="4">
               <StackPanel x:Name="R441Controls" Spacing="4" Visibility="Collapsed">
-                <TextBlock Text="R500 · CPU čištění" FontSize="12" FontWeight="SemiBold" Margin="0,6,0,0"/>
-                <Grid><TextBlock Text="Síla Skirt / dering"/><TextBlock x:Name="R441IntensityValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
-                <Slider x:Name="R441Intensity" Minimum="0" Maximum="200" Value="50" StepFrequency="5" Height="28" AutomationProperties.Name="Síla Skirt / dering" ToolTipService.ToolTip="Hlavní čištění a tvarování kontur. 50 % je výchozí intenzita. Účinek zůstává aktivní i nad 80 kB; 0 % kontury vypne. Vyšší hodnoty mohou změkčit jemnou texturu."/>
+                <TextBlock Text="R600.4 · čištění obrazu" FontSize="12" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                <Grid><TextBlock Text="Síla Skirt / dering"/><TextBlock x:Name="R441ActualValue" Text="Odhad: 50 %" HorizontalAlignment="Right" ToolTipService.ToolTip="Výsledná síla hlavního Skirt/dering filtru po automatickém útlumu. Po výpočtu náhledu vychází ze skutečné velikosti paketu. Maximum výsledného míchání je 100 %."/></Grid>
+                <CheckBox x:Name="R441Automatic" Content="Automaticky snižovat podle kvality" IsChecked="True" ToolTipService.ToolTip="Do kvality 10 bez útlumu kvalitou; mezi 10 a 50 síla lineárně klesá na nulu. Zohledňuje i hustotu dat. Vypnutí vždy použije ručně nastavenou sílu bez obou útlumů; ostatní filtry se nemění."/>
+                <Grid><TextBlock Text="Nastavená síla" FontSize="12"/><TextBlock x:Name="R441IntensityValue" Text="50 %" HorizontalAlignment="Right" FontSize="12"/></Grid>
+                <Slider x:Name="R441Intensity" Minimum="0" Maximum="200" Value="50" StepFrequency="5" Height="28" AutomationProperties.Name="Nastavená síla Skirt / dering" ToolTipService.ToolTip="Výchozí nastavená síla je 50 %. Automatika tuto hodnotu nepřepisuje. V ručním režimu se automatický útlum neuplatní. 0 % vypne hlavní Skirt/dering filtr; ostatní filtry mají vlastní ovládání. Vyšší hodnoty mohou změkčit jemnou texturu."/>
                 <Grid><TextBlock Text="Stronger Tangents"/><TextBlock x:Name="StrongerTangentsValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
                 <Slider x:Name="StrongerTangents" Minimum="0" Maximum="100" Value="0" StepFrequency="5" Height="28" AutomationProperties.Name="Stronger Tangents" ToolTipService.ToolTip="Silnější vyhlazování podél kontur. Vyšší hodnoty mohou změkčit jemné detaily."/>
                   <Grid><TextBlock Text="Doostření hran"/><TextBlock x:Name="R441ContrastValue" Text="0 %" HorizontalAlignment="Right"/></Grid>
@@ -49,7 +51,7 @@
                   <Slider x:Name="R441Antialias" Minimum="0" Maximum="100" Value="50" StepFrequency="5" Height="28" AutomationProperties.Name="Antialiasing kontur"/>
                   <CheckBox x:Name="R441ProtectText" Content="Chránit text a jemné UI" IsChecked="False"/>
                 </StackPanel></Expander>
-                <TextBlock x:Name="CleanupHint" Text="Účinek automaticky slábne s vyšší hustotou dat." TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
+                <TextBlock x:Name="CleanupHint" Text="Automaticky: od kvality 10 slábne, při 50 je Skirt / dering vypnutý." TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
               </StackPanel>
               <Expander Header="Doplňkové čištění" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"><StackPanel Spacing="4">
                 <TextBlock Text="Výchozí kontury 200 %, plochy vypnuté. Kontury slábnou s vyšší kvalitou, aby zachovaly jemné detaily." TextWrapping="Wrap" FontSize="11" Opacity="0.75"/>
@@ -58,6 +60,11 @@
               <StackPanel x:Name="ShapeControls" Spacing="4">
                 <Grid><TextBlock Text="Kontury a tvary"/><TextBlock x:Name="ShapeIntensityValue" Text="200 %" HorizontalAlignment="Right"/></Grid>
                 <Slider x:Name="ShapeIntensity" Minimum="0" Maximum="200" Value="200" StepFrequency="5" Height="28" AutomationProperties.Name="Kontury a tvary" ToolTipService.ToolTip="Plynulejší barevné kontury a tvary. Účinek závisí na zvoleném enkodéru; vyšší hodnoty mohou měnit drobné detaily."/>
+                <Grid><TextBlock Text="Tolerance tvarů"/><TextBlock x:Name="ShapeToleranceValue" Text="100 %" HorizontalAlignment="Right"/></Grid>
+                <Slider x:Name="ShapeTolerance" Minimum="25" Maximum="200" Value="100" StepFrequency="5" Height="28" AutomationProperties.Name="Tolerance kontur a tvarů" ToolTipService.ToolTip="100 % zachovává dosavadní rozpoznávání. Nižší tolerance vyžaduje přesnější barevnou a geometrickou shodu; vyšší přijme i méně pravidelnou konturu, ale může upravit texturu. Ochrana průhlednosti a tenkých tahů zůstává."/>
+                <Grid><TextBlock Text="Minimální měřítko tvarů"/><TextBlock x:Name="ShapeMinimumSizeValue" Text="100 %" HorizontalAlignment="Right"/></Grid>
+                <Slider x:Name="ShapeMinimumSize" Minimum="25" Maximum="200" Value="100" StepFrequency="5" Height="28" AutomationProperties.Name="Minimální měřítko kontur a tvarů" ToolTipService.ToolTip="100 % zachovává dosavadní velikost analyzovaného okolí. Nižší hodnoty hledají drobnější tvary, vyšší dávají přednost větším souvislým tvarům. Jde o relativní měřítko v pracovním obrazu, ne o ostrý limit počtu pixelů."/>
+                <Button x:Name="ResetShapeTuning" Content="Obnovit toleranci a měřítko · 100 %" HorizontalAlignment="Stretch"/>
               </StackPanel>
               </StackPanel></Expander>
               <TextBlock Text="Po změně vypočítejte náhled." FontSize="11" Opacity="0.7"/>
@@ -68,9 +75,11 @@
           <Expander x:Name="VideoControls" Header="Video" HorizontalAlignment="Stretch">
           <StackPanel Spacing="8">
           <ComboBox x:Name="Every" Header="Při převodu uložit" HorizontalAlignment="Stretch" SelectedIndex="0"><ComboBoxItem Content="Každý snímek"/><ComboBoxItem Content="Každý 2. snímek"/><ComboBoxItem Content="Každý 4. snímek"/><ComboBoxItem Content="Každý 8. snímek"/><ComboBoxItem Content="Každý 16. snímek"/></ComboBox>
-          <ToggleSwitch x:Name="Temporal" Header="Mezisnímková komprese (experimentální)" IsOn="False" OnContent="Přebírání oblastí a rozdíly" OffContent="Každý snímek zvlášť (původní)" ToolTipService.ToolTip="Vypnuto: každý snímek se kóduje samostatně původní cestou. Zapnuto: přebírá nezměněné nebo dost podobné oblasti a kóduje jejich změny. Toleranci i intervaly lze nastavit níže. Nové soubory vyžadují tuto nebo novější verzi dekodéru."/>
-          <NumberBox x:Name="KeyframeInterval" Header="Adaptivní interval keyframu" Minimum="0" Maximum="10000000" Value="120" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="V přesném režimu po tomto počtu uložených snímků změna více než 1 % pixelů vyvolá keyframe; menší změny mohou interval prodloužit. Při kladné toleranci se po intervalu obnoví reference při každé aktualizaci bloků; přibližné přebírání má navíc vlastní limit držení. Velké nebo drahé změny vytvoří keyframe dříve. 0: bez věkového limitu."/>
-          <NumberBox x:Name="SimilarTolerance" Header="Podobné oblasti: tolerance RGB (0–16)" Minimum="0" Maximum="16" Value="0" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="0 vypne přibližné přebírání. Např. 3 dovolí rozdíl nejvýše 3 z 255 v každém RGB kanálu všech pixelů bloku 16×16. Podobný blok ponechá ze staršího obrazu. Alfa musí být shodná. Může potlačit jemný pohyb a změny osvětlení; vyšší číslo může vytvářet duchy."/>
+          <ToggleSwitch x:Name="Temporal" Header="Mezisnímková komprese (experimentální)" IsOn="False" OnContent="Komprese mezi snímky" OffContent="Každý snímek zvlášť (původní)" ToolTipService.ToolTip="Vypnuto: každý snímek se kóduje samostatně původní cestou. Zapnuto: vyberte přesné rozdíly koeficientů, přibližné přebírání oblastí nebo ztrátovou pohybovou predikci Max komprese. Bezztrátový režim zachová přesně obraz samostatně zakódovaných snímků. Nové soubory vyžadují tuto nebo novější verzi dekodéru."/>
+          <ComboBox x:Name="TemporalMethod" Header="Způsob mezisnímkové komprese" HorizontalAlignment="Stretch" SelectedIndex="0" ToolTipService.ToolTip="Koeficienty zachovají přesně kresbu samostatných snímků. Oblasti přebírají podobné části na stejném místě. Max komprese navíc hledá posun, místní otočení a změnu měřítka; tolerancí volíte kompromis mezi velikostí a detaily. Má vlastní rekonstrukční referenci, oddělenou od zobrazovacího doostření."><ComboBoxItem Content="Koeficienty – přesně stejný obraz"/><ComboBoxItem Content="Oblasti – nastavitelná podobnost"/><ComboBoxItem Content="Max komprese – pohyb a tolerance (experimentální)"/></ComboBox>
+          <NumberBox x:Name="KeyframeInterval" Header="Adaptivní interval keyframu" Minimum="0" Maximum="10000000" Value="120" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="Limit v počtu uložených snímků; 0 ho vypne. Při změnách obrazu se reference obnoví nejpozději po 5 sekundách podle časových značek. Koeficienty mají navíc nejvýše 16 závislostí kvůli rychlému přeskakování. Přesně shodný obraz zůstává krátkým přímým odkazem bez zbytečných plných keyframů. Velké změny mohou obnovit reference dříve."/>
+          <NumberBox x:Name="SimilarTolerance" Header="Tolerance podobných oblastí (0–16 RGB)" Minimum="0" Maximum="16" Value="0" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="Největší rozdíl každého RGB kanálu při přebírání oblastí. Nula nepovolí přibližnou shodu. Toto nastavení patří pouze metodě Oblasti."/>
+          <NumberBox x:Name="MaxTolerance" Header="Síla Max komprese (0–16)" Minimum="0" Maximum="16" Value="6" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="Začněte na 6: jemnější reziduum a průběžná oprava barev i chyby reference. Hodnoty 12–16 jsou agresivní úspora s viditelnou ztrátou detailů a mohou zhoršit stabilitu v pohybu. Nula je nejjemnější ztrátové nastavení. Hodnota není zárukou největší chyby výsledného RGB pixelu. Přesné nezměněné oblasti se zachovávají, přibližné ostré masky 8×8 se nepoužívají."/>
           <NumberBox x:Name="SimilarHold" Header="Podobné oblasti: podržet nejvýše snímků" Minimum="1" Maximum="120" Value="10" SmallChange="1" SpinButtonPlacementMode="Compact" ToolTipService.ToolTip="Po tolika dalších uložených snímcích se při přibližném přebírání obnoví celá reference, i když je stále podobná. Větší změny se aktualizují okamžitě. Porovnání se vždy vztahuje k původní referenci, takže se malé chyby nesčítají. Přesně shodný obraz může zůstat bez obnovy."/>
           </StackPanel>
           </Expander>
@@ -152,7 +161,7 @@
       </Grid>
       <StackPanel Grid.Row="2" Padding="14,8,14,12" Spacing="8">
         <Grid x:Name="CompareControls" Visibility="Collapsed" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Porovnání" VerticalAlignment="Center" FontSize="12"/><Slider x:Name="Split" Grid.Column="1" Minimum="0" Maximum="100" Value="50" AutomationProperties.Name="Poloha srovnávací čáry"/></Grid>
-          <Expander x:Name="LegacyFilter" Visibility="Collapsed" Header="Finální ostření · 0–100 %" IsExpanded="False" HorizontalAlignment="Stretch"><StackPanel Spacing="8">
+          <Expander x:Name="LegacyFilter" Visibility="Collapsed" Header="Finální ostření · 0–200 %" IsExpanded="False" HorizontalAlignment="Stretch"><StackPanel Spacing="8">
             <StackPanel x:Name="SmoothingPanel" Spacing="8">
             <Grid><TextBlock x:Name="FilterName" Text="Vyhlazení bloků"/><TextBlock x:Name="DeblockingValue" Text="100 %" HorizontalAlignment="Right"/></Grid>
             <Slider x:Name="Deblocking" Minimum="0" Maximum="100" Value="100" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Vyhlazení hran a deblocking, 0 až 100 procent"/>
@@ -160,7 +169,7 @@
             </StackPanel>
             <StackPanel x:Name="SharpnessPanel" Spacing="8" Visibility="Collapsed">
               <Grid><TextBlock Text="Finální ostření"/><TextBlock x:Name="SharpeningValue" Text="50 %" HorizontalAlignment="Right"/></Grid>
-              <Slider x:Name="Sharpening" Minimum="0" Maximum="100" Value="50" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Obnova ostrosti"/>
+              <Slider x:Name="Sharpening" Minimum="0" Maximum="200" Value="50" StepFrequency="1" SmallChange="1" AutomationProperties.Name="Obnova ostrosti" ToolTipService.ToolTip="0 % vypnuto; 100 % odpovídá dosavadnímu maximu, 200 % zesílí jasové detaily. Ostření se aplikuje na hotový vyčištěný a zkonturovaný obraz."/>
                 <TextBlock Text="Ostří až hotový vyčištěný a zkonturovaný obraz. Síla nezávisí na velikosti souboru. Adaptivní diamantové okolí omezuje lemy a změny barev. 0 % filtr vypne; soubor zůstává stejný." TextWrapping="Wrap" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
             </StackPanel>
           </StackPanel></Expander>
@@ -194,5 +203,5 @@
       </StackPanel>
     </Grid>
   </Grid>
-  <StackPanel x:Name="Footer" Grid.Row="2" Margin="20,12,20,12" Spacing="8"><InfoBar x:Name="Error" Severity="Error" IsOpen="False" IsClosable="True"/><ProgressBar x:Name="Progress" Minimum="0" Maximum="100" Value="0"/><TextBlock x:Name="Status" Text="Připraveno" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></StackPanel>
+  <StackPanel x:Name="Footer" Grid.Row="2" Margin="20,12,20,12" Spacing="8"><InfoBar x:Name="Error" Severity="Error" IsOpen="False" IsClosable="True"/><ProgressBar x:Name="Progress" Minimum="0" Maximum="100" Value="0"/><TextBlock x:Name="Status" Text="Připraveno" TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}" ToolTipService.ToolTip="Decode průměr: čas aktivní přípravy a dekódování na hotový snímek, průměr posledních až 32 snímků. Souběh větví se počítá jednou; čekání na plnou frontu se nezapočítává. Snímky/s vyjadřují rychlost dekodéru při práci. Latence úlohy je doba konkrétního decode včetně čekání na CPU/GPU. Převzetí z fronty je čas získání připraveného snímku pro přehrávač."/></StackPanel>
 </Grid>

@@ -765,7 +765,7 @@ std::vector<SpatialTileBound> spatialTileBounds(const float* source, int stride,
         }
     return bounds;
 }
-template <bool selectionOnly, bool current = false>
+template <bool selectionOnly, bool current = false, bool uniform = false>
 Bytes encodeSpatialBandImpl(const float* source, int stride, int width, int height, float step, bool prediction,
                         float rounding, bool median, float rdo, bool omitEmpty, uint8_t adaptive, bool enhanced,
                         bool extended, float adaptiveRate, const uint8_t* parent, int parentStride,
@@ -792,7 +792,7 @@ Bytes encodeSpatialBandImpl(const float* source, int stride, int width, int heig
         selectedIntegers->assign(size_t(width) * height, 0.f);
     // The R470 model has fixed invariants; specialize only after validating
     // inputs so the compiler can remove retired per-coefficient branches.
-    if constexpr(current){entropyMode=32;adaptive=3;enhanced=true;extended=true;parent=nullptr;}
+    if constexpr(current){entropyMode=32;adaptive=uniform?0:3;enhanced=true;extended=true;parent=nullptr;}
     using Coder = std::conditional_t<selectionOnly, ModelTrainer, Encoder>;
     Coder coder;
     coder.adaptation = spatialAdaptation(entropyMode);
@@ -1275,13 +1275,17 @@ Bytes encodeSpatialBand(const float* source, int stride, int width, int height, 
                         std::vector<float>* selectedIntegers, bool selectionOnly, std::span<const float> groupRates, std::vector<float>* tilePrecisions, float flatRateBoost, uint32_t rateCell) {
     require(!selectionOnly || (selectedIntegers && !tileCosts && (adaptive == 0 || adaptive == 3)),
             "Selection-only encoding requires uniform integer capture without bit costs.");
-    const auto run = [&]<bool select, bool current = false>() {
-        return encodeSpatialBandImpl<select, current>(source, stride, width, height, step, prediction, rounding, median, rdo, omitEmpty,
+    const auto run = [&]<bool select, bool current = false, bool uniform = false>() {
+        return encodeSpatialBandImpl<select, current, uniform>(source, stride, width, height, step, prediction, rounding, median, rdo, omitEmpty,
             adaptive, enhanced, extended, adaptiveRate, parent, parentStride, significance,
             significanceStride, entropyMode, quantRdo, quantGradient, synthesisCoupling,
             correlations, coupledQuantizer, rateQuantizer, patternSimilarity, tileRates,
             restrictedPrecision, bounds, tileCosts, selectedIntegers, groupRates, tilePrecisions, flatRateBoost, rateCell);
     };
+    if(entropyMode==33){
+        require(adaptive==0&&enhanced&&extended&&!parent,"Uniform coefficient model requires uniform precision.");
+        return selectionOnly?run.template operator()<true,true,true>():run.template operator()<false,true,true>();
+    }
     if(entropyMode==32&&adaptive==3&&enhanced&&extended&&!parent)
         return selectionOnly ? run.template operator()<true,true>() : run.template operator()<false,true>();
     return selectionOnly ? run.template operator()<true>() : run.template operator()<false>();
@@ -1294,7 +1298,9 @@ static void decodeCurrentSpatialBand(std::span<const uint8_t> coded, float* targ
     // visible to the compiler instead of branching on retired modes per bit.
     constexpr bool enhanced = true, extended = true, median = false;
     constexpr const float* parent = nullptr;
-    require((entropyMode != 24 && entropyMode != 32) || (adaptive && enhanced && extended && !parent), "Invalid extended precision stream.");
+    // The mode-32 context model also serves uniform mode 33. Its public
+    // dispatcher validates whether a precision map is present before entry.
+    require(entropyMode != 24 || adaptive, "Invalid extended precision stream.");
     SpatialCoderConfig{entropyMode, enhanced, extended, parent != nullptr, parentStride}.validate(width, height, stride,
                                                                                                   step);
     require(target != nullptr, "Missing coefficient output.");
@@ -1483,8 +1489,15 @@ static void decodeCurrentSpatialBand(std::span<const uint8_t> coded, float* targ
 void decodeSpatialBand(std::span<const uint8_t> coded, float* target, int stride, int width, int height, float step,
                        bool detail, bool prediction, bool median, bool adaptive, bool enhanced, bool extended,
                        const float* parent, int parentStride, uint8_t mode) {
-    require((mode == 23 || mode == 24 || mode == 31 || mode == 32) && enhanced && extended && !median && !parent,
+    require((mode == 23 || mode == 24 || mode == 31 || mode == 32 || mode == 33) && enhanced && extended && !median && !parent,
             "Unsupported retired spatial decoder.");
+    if(mode==33){
+        require(!adaptive,"Uniform coefficient model cannot carry adaptive precision.");
+        require(!coded.empty()&&coded.front()==4,"Invalid uniform coefficient model selector.");
+        if(prediction)decodeCurrentSpatialBand<true,false,32>(coded,target,stride,width,height,step,detail,parentStride);
+        else decodeCurrentSpatialBand<false,false,32>(coded,target,stride,width,height,step,detail,parentStride);
+        return;
+    }
     if (mode == 24 || mode == 32) {
         if (mode == 32) {
             require(adaptive, "Fine local precision requires AQ.");

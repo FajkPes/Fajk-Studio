@@ -21,10 +21,17 @@ inline float contourStrength(float rate,double equivalent,uint32_t contours){
     if(contourAmount<1.f/512)contourAmount=0;
     return contourAmount;
 }
-inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,uint32_t bytes,uint32_t surfaces,uint32_t contours,uint32_t sourceWidth=0,uint32_t sourceHeight=0){
+inline std::shared_ptr<const ArtifactGuidePlan> prepareGpu(std::span<const uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,uint32_t bytes,uint32_t surfaces,uint32_t contours,uint32_t sourceWidth=0,uint32_t sourceHeight=0,uint64_t sourceStamp=0,ContourTuning tuning={}){
+    if(surfaces||!contours||uint64_t(width)*height<512*512)return {};
+    const auto rw=sourceWidth?sourceWidth:width,rh=sourceHeight?sourceHeight:height;
+    const auto rate=rateStrength(bytes,rw,rh);
+    const double equivalent=double(bytes)*double(2560*1440)/(double(rw)*rh);
+    return prepareArtifactGuidePlan(pixels,width,height,workers,0,contourStrength(rate,equivalent,contours),sourceStamp,tuning);
+}
+inline void restore(std::span<uint8_t> pixels,uint32_t width,uint32_t height,uint32_t workers,uint32_t bytes,uint32_t surfaces,uint32_t contours,uint32_t sourceWidth=0,uint32_t sourceHeight=0,ContourTuning tuning={}){
     const float rate=rateStrength(bytes,sourceWidth?sourceWidth:width,sourceHeight?sourceHeight:height);
     const double equivalent=double(bytes)*double(2560*1440)/(double(sourceWidth?sourceWidth:width)*(sourceHeight?sourceHeight:height));
     const float contourAmount=contourStrength(rate,equivalent,contours);
-    artifactCleanup(pixels,width,height,workers,rate*surfaces/100.f,contourAmount,256);
+    artifactCleanup(pixels,width,height,workers,rate*surfaces/100.f,contourAmount,256,tuning);
 }
 }

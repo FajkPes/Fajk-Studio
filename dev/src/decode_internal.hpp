@@ -2,10 +2,14 @@
 #include "packet_view.hpp"
 #include "text_guard.hpp"
 namespace fajk {
+struct ArtifactGuidePlan;
 // Native-size CPU cleanup and upscale share the decoded working image.
 // Flat metadata remains owned here until reconstruction finishes.
 struct DeferredUpscale {
     bool active=false,skipBaseCleanup=false;
+    bool allowGpuArtifact=false;
+    ContourTuning shapes;
+    std::shared_ptr<const ArtifactGuidePlan> artifact;
     uint32_t budget=0,surfaces=0,contours=0;
     Bytes flatMetadata;
     Bytes* recycle=nullptr;

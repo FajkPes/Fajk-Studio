@@ -1,8 +1,8 @@
 #include <winver.h>
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,11,500,1
- PRODUCTVERSION 0,11,500,1
+ FILEVERSION 0,11,600,4
+ PRODUCTVERSION 0,11,600,4
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
  FILEFLAGS 0
  FILEOS VOS_NT_WINDOWS32
@@ -17,10 +17,10 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "Fajk Studio R500 CPU / GPU\0"
-            VALUE "FileVersion", "0.11.500.1\0"
-            VALUE "ProductName", "Fajk Studio R500\0"
-            VALUE "ProductVersion", "0.11.500.1\0"
+            VALUE "FileDescription", "Fajk Studio R600.4 CPU / GPU\0"
+            VALUE "FileVersion", "0.11.600.4\0"
+            VALUE "ProductName", "Fajk Studio R600.4\0"
+            VALUE "ProductVersion", "0.11.600.4\0"
 #ifdef FAJK_DECODE_EXPORTS
             VALUE "OriginalFilename", "fajk_decode.dll\0"
 #elif defined(FAJK_VERSION_CLI)

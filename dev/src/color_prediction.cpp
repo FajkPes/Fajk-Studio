@@ -1,5 +1,6 @@
 #include "color_prediction.hpp"
 #include "color_prediction_fit.hpp"
+#include "wavelet_rate_control.hpp"
 #include "perceptual_color.hpp"
 #include "timing.hpp"
 #include "wavelet.hpp"
@@ -18,7 +19,7 @@ struct ColorModel {
 // equally weighted estimate at color edges. High-density 32px cells keep the
 // existing predictor, where this correction caused a regression on faces.
 void refineDetailCell(const Frame& f,uint32_t tile,uint32_t sourceStride,uint32_t cell,
-                      ColorModel& model,const WaveletSourceColor& source){
+                      ColorModel& model,const WaveletSourceColor& source,bool smoothColorModel){
     const uint32_t modelColumns=(f.width+tile-1)/tile;
     double variance=0,covariance[2]{};uint32_t samples=0;
     const uint32_t x0=(cell%modelColumns)*tile,y0=(cell/modelColumns)*tile;
@@ -29,7 +30,7 @@ void refineDetailCell(const Frame& f,uint32_t tile,uint32_t sourceStride,uint32_
             for(auto i:at){const double dy=source.planes[0][i]-mean[0];variance+=dy*dy;for(int c=0;c<2;++c)covariance[c]+=dy*(source.planes[c+1][i]-mean[c+1]);}
             samples+=4;
         }
-    for(int c=0;c<2;++c){const int q=std::clamp(int(std::lround(covariance[c]/(variance+samples*.25)*16)),-24,24);const double a=q/16.;const int detail=2*a*covariance[c]-a*a*variance>samples*.25?q:0;
+    for(int c=0;c<2;++c){const int q=std::clamp(int(std::lround(covariance[c]/(variance+samples*.25)*16)),-24,24);const double a=q/16.;const int detail=smoothColorModel||2*a*covariance[c]-a*a*variance>samples*.25?q:0;
         model.map[cell*2+c]=uint8_t(int8_t(std::lround((int8_t(model.map[cell*2+c])+detail)*.5)));}
 }
 // Double tree reductions differ only at the last arithmetic bits. Revisit
@@ -70,6 +71,7 @@ GpuColorStatistics orderedColorStatistics(const WaveletSourceColor& source,uint3
 }
 ColorModel fitCentered(const Frame& f, uint32_t tile, uint32_t threads, uint8_t colorSpace = 0, bool fast = false,
                        WaveletSourceColor* sourceColor = nullptr) {
+    const bool smoothColorModel=waveletRateControl&&waveletRateControl->smoothColorModel;
     const uint32_t cols = (f.width + tile - 1) / tile, rows = (f.height + tile - 1) / tile;
     ColorModel model{Bytes(size_t(cols) * rows * 2), std::vector<float>(size_t(cols) * rows)};
     const uint32_t stride = (f.width + 63) & ~63u, paddedHeight = (f.height + 63) & ~63u;
@@ -99,11 +101,11 @@ ColorModel fitCentered(const Frame& f, uint32_t tile, uint32_t threads, uint8_t 
                     const double cov=s.cross[c]-s.sum*s.color[c]/count;
                     const int q=std::clamp(int(std::lround(cov/(variance+count*4)*16)),-24,24);
                     const double a=q/16.;
-                    int value=2*a*cov-a*a*variance>count*4?q:0;
+                    int value=smoothColorModel||2*a*cov-a*a*variance>count*4?q:0;
                     if(tile==64){
                         const int dq=std::clamp(int(std::lround(s.detailCross[c]/(s.detailVariance+s.detailCount*.25)*16)),-24,24);
                         const double da=dq/16.;
-                        const int detail=2*da*s.detailCross[c]-da*da*s.detailVariance>s.detailCount*.25?dq:0;
+                        const int detail=smoothColorModel||2*da*s.detailCross[c]-da*da*s.detailVariance>s.detailCount*.25?dq:0;
                         value=int(std::lround((value+detail)*.5));
                     }
                     model.map[cell*2+c]=uint8_t(int8_t(value));
@@ -212,9 +214,9 @@ ColorModel fitCentered(const Frame& f, uint32_t tile, uint32_t threads, uint8_t 
                 const double cov = syc[c] - sy * sc[c] / count;
                 const int q = std::clamp(int(std::lround(cov / (variance + count * 4) * 16)), -24, 24);
                 const double a = q / 16.;
-                model.map[cell * 2 + c] = uint8_t(int8_t(2 * a * cov - a * a * variance > count * 4 ? q : 0));
+                model.map[cell * 2 + c] = uint8_t(int8_t(smoothColorModel||2 * a * cov - a * a * variance > count * 4 ? q : 0));
             }
-            if(sourceColor&&tile==64)refineDetailCell(f,tile,stride,uint32_t(cell),model,*sourceColor);
+            if(sourceColor&&tile==64)refineDetailCell(f,tile,stride,uint32_t(cell),model,*sourceColor,smoothColorModel);
         }
     });
     if (sourceColor && !gpuConverted) {

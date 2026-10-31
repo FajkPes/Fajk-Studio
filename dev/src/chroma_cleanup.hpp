@@ -51,9 +51,10 @@ inline void recursiveLumaCleanup(std::vector<float>& data,int stride,int width,i
 }
 // Symmetric recursive color smoothing. Weights read immutable neighboring
 // colors and luma; strong boundaries stop propagation in both directions.
-inline void recursiveChromaCleanup(std::vector<float>& u,std::vector<float>& v,const std::vector<float>& guide,int stride,int width,int height,uint32_t threads,uint8_t mode,bool optimized=true){
+inline void recursiveChromaCleanup(std::vector<float>& u,std::vector<float>& v,const std::vector<float>& guide,int stride,int width,int height,uint32_t threads,uint8_t mode,bool optimized=true,float amount=1.f){
     require(mode>=1&&mode<=7&&width>0&&height>0&&stride>=width&&u.size()==v.size()&&(guide.empty()||guide.size()==u.size())&&u.size()>=size_t(stride)*height,"Invalid recursive chroma cleanup.");
-    const float range=std::array<float,7>{4,8,16,2,4,6,8}[mode-1],alpha=std::array<float,7>{.6f,.75f,.85f,.5f,.5f,.5f,.5f}[mode-1];
+    require(std::isfinite(amount)&&amount>=0&&amount<=1,"Invalid color cleanup amount.");if(!amount)return;
+    const float range=std::array<float,7>{4,8,16,2,4,6,8}[mode-1],alpha=std::array<float,7>{.6f,.75f,.85f,.5f,.5f,.5f,.5f}[mode-1]*amount;
     thread_local std::array<std::vector<float>,2> cache;std::array<std::vector<float>,2> owned;
     auto& originals=size_t(width)*height<=8*1024*1024?cache:owned;
     auto& originalU=originals[0];auto& originalV=originals[1];originalU.resize(size_t(width)*height);originalV.resize(originalU.size());

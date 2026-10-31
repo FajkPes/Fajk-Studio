@@ -3,6 +3,15 @@
 #include <cmath>
 namespace fajk {
 struct CleanupQuality {float surfaces=1,contours=1,antialias=1;};
+// Bake the UI quality fade into the packet once; retain the raw slider separately.
+inline uint32_t skirtQualityIntensity(uint32_t intensity,float quality,bool automatic){
+    if(!std::isfinite(quality))throw std::runtime_error("Quality must be finite.");
+    const float fade=automatic?std::clamp((50.f-quality)/40.f,0.f,1.f):1.f;
+    return uint32_t(std::lround(std::min(intensity,200u)*fade));
+}
+inline float skirtBlend(const Reconstruction441& settings,const CleanupQuality& quality){
+    return std::clamp((settings.fixedIntensity?1.f:quality.contours)*settings.intensity/100.f,0.f,1.f);
+}
 // Strength follows coded density, not the absolute byte count. This curve is
 // assessed on equal packets at low, moderate, and high density.
 inline CleanupQuality cleanupQuality(uint32_t bytes,uint32_t width,uint32_t height){

@@ -10,6 +10,8 @@ public:
     virtual ~FrameCodec() = default;
     virtual Packet encode(const Frame& frame, const EncodeOptions& options) = 0;
     virtual Frame decode(const Packet& packet, uint32_t width, uint32_t height) = 0;
+    virtual void decodeInto(const Packet& packet,uint32_t width,uint32_t height,std::span<uint8_t> output) = 0;
+    virtual void setCacheBudgetBytes(size_t bytes) = 0;
     virtual void setThreads(uint32_t threads) = 0;
     virtual void setComputeBackend(ComputeBackend backend) = 0;
     virtual ComputeBackend backend() const = 0;

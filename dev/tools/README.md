@@ -405,3 +405,146 @@ pixelové SHA, časování snímku, výplň a guard bajty se kontrolují mimo č
 Souvislý výstup je kontrolní případ; recyklace padded scratch nemá zrychlovat
 tuto cestu. Nové `fajk_sdk_tests` ověřují C ABI nad skutečnou DLL v Release
 i ASAN a jsou součástí běžných Full testů.
+
+R520: `verify_motion_temporal.py --cli CLI --library DLL --video VIDEO
+--hold HOLD.avi --output DIR --frames 240 --repeats 2` ověřuje skutečné
+exporty Max proti intra (30/80 kB, CPU/GPU), opakovanou shodu paketů,
+CRC/index, limity bajtů a řetězců, pětisekundové PTS i dlouhé statické držení.
+Až po měření exportů ověří každý snímek přes SDK s ochrannými bajty a
+náhodné čtení z nového handle. Max je ztrátový: netvrdí rovnost s intra.
+`fajk_motion_quality_probe VIDEO INTRA MAX OUTPUT COUNT BACKEND [SNAPSHOTS=1]
+[MOTION_FLICKER=0]` měří chybu proti původnímu videu a časové změny chyby.
+Volitelná pohybová metrika zarovná předchozí zdroj i oba dekódované obrazy
+stejným polem z původních snímků; přispívají pouze zdrojové shody do 3 RGB.
+Nejde o úplnou perceptuální záruku ani metriku odkrytých oblastí. Pro obrázky
+použijte také `fajk_metric` (SSIMULACRA2) a vizuální kontrolu.
+
+`package_release.py --package release/R520 --build dev/build-r4 --archive
+release/R520-20261025.zip --validation RESULTS.json` zkontroluje shodu EXE/DLL/LIB
+s buildem a stejné verze z Windows resources. Vytvoří BUILD.json s hashi,
+vynechá osobní nastavení a ověří CRC i SHA256 všech souborů uvnitř ZIP.
+Existující archiv nepřepisuje; výsledný soubor zveřejní atomickým přejmenováním.
+
+Optimalizace po R520: `compare_motion_exports.py --baseline-cli OLD_CLI
+--candidate-cli NEW_CLI --video VIDEO --output DIR [--repeats 3]
+[--budgets 80000 30000] [--backends gpu cpu] [--require-identical]` střídá
+skutečné exporty obou verzí, kontroluje opakovanou determinističnost,
+CRC/indexy, rozpočty a hloubku referencí. Zaznamenává wall time i součet práce
+CPU. Volba `--require-identical` je vhodná pro změny bez změny paketů;
+kompaktnější bezztrátový zápis metadat může změnit soubor bez změny obrazu.
+
+`compare_motion_decoders.py --before OLD_DLL --after NEW_DLL --before-video
+OLD.fajkv --after-video NEW.fajkv --output RESULTS.json [--repeats 2]`
+porovná každý snímek přes skutečné SDK na CPU i GPU, ochranné bajty,
+časové údaje, opakovanou determinističnost a seek z nových handles.
+Vyžaduje přesné shodné pixely pro daný backend. Hashování je mimo měření.
+Časujte bez souběžných buildů, exportů či quality probes.
+Pro úmyslně ztrátové změny přijímá `compare_motion_decoders.py` přepínač
+`--allow-pixel-differences`; přesné shody pak vyžaduje zvlášť mezi opakovaným
+a náhodným dekódováním každého souboru. Časové údaje obou exportů musí stále
+souhlasit. V takovém režimu výkonový test nehodnotí kvalitu; ta potřebuje
+samostatný source quality probe. Sekvenční část dekóduje celý soubor pro jeden
+handle před druhým, aby dva soubory stejné DLL navzájem nezahazovaly TLS cache.
+
+GPU testy mají nezávislý oracle pro spojené warpy, stacionární volbu 8x8,
+reziduum a dopřednou transformaci. Kontrolují i objem přenosů, liché
+rozměry, barevné posuny, masky přesných shod a nepozměněný CPU fallback.
+Motion testy porovnávají kompaktní metadata s původním polem a hlídají,
+že menší metadata sama nezmění původní rozhodnutí o přijetí predikce.
+Řízený test jednotné změny osvětlení vyžaduje přesné rekonstruované pixely;
+jeho procento úspory se nesmí vydávat za úsporu celého herního videa.
+
+Příprava pohybu v Max nyní hledá odpovídající oblasti v původním svědkovi
+reference a zbytkovou chybu stále počítá vůči skutečné uzavřené rekonstrukci.
+Jde o změnu obrazu: porovnávejte celý klip pomocí motion_quality_probe a
+perceptuální kontrolní snímky, nevyžadujte rovnost s předchozím enkodérem.
+Tato předchozí úprava používala nezměněný formát 137/14. Nová rekonstrukční
+filtrace Max níže používá variantu rezidua 15 a vyžaduje aktuální dekodér;
+kompatibilita se starými aplikacemi není jejím cílem.
+
+Private CoefficientEncodeCapture předává vybrané integer koeficienty keyframu
+jeho kanonické rekonstrukci. Použije se pouze při shodě kompletního native
+paketu, rozměrů a vybraného kvantizačního kroku; jinak se normálně dekóduje.
+Nepodporovaná flat metadata capture vypínají. Test motion_temporal porovnává
+tuto cestu s nezávislým dekodérem pro CPU/GPU, Fast/More quality, AQ off/on,
+změnu identity a různé rozpočty. Případné filtrování je stejné jako původně.
+
+UI udržuje zvlášť generaci požadavků a revizi obsahu. Seek, play a filtry
+zahodí staré požadavky, ale zachovají čtečku/index a reference. Nově otevřený
+či přepsaný obsah zvyšuje revizi i při stejné cestě. Smoke log
+decode-cache-smoke.txt počítá skutečná otevření čteček pouze při smoke běhu.
+
+`verify_compression_candidate.py --cli FINAL_CLI --library FINAL_DLL
+--old-library OLD_DLL --video INPUT --output DIRECTORY --measurements
+GPU_RESULTS.json CPU_RESULTS.json [--hold long-hold.avi]` znovu exportuje
+všechna měřená nastavení finálním sestavením a požaduje stejné SHA256 celých
+souborů. Následně kontroluje každý snímek, ochranné bajty, časové údaje,
+náhodné seeky a pixelově přesnou kompatibilitu starého/nového SDK na CPU/GPU.
+Volitelný hold je konkrétní fixture z Temporal-20261024: 420 snímků,
+jediná změna po 12 sekundách, keyframy pouze na indexech 0 a 360.
+
+`evaluate_motion_strength.py --cli CLI --video INPUT --intra-reference
+INTRA_RESULTS.json --output DIR --case gpu:80000:6 --case gpu:80000:12`
+exportuje a strukturálně ověří jednotlivé síly Max. Úspora je vztažená
+k uloženému intra exportu stejného backendu/rozpočtu/počtu snímků. Nástroj
+záměrně nevyvozuje zrychlení z běhů zatíženého počítače.
+
+`verify_motion_strength_quality.py --probe PROBE --metric METRIC --video INPUT
+--exports STRENGTH_RESULTS.json --baseline-directory OLD_EXPORTS --output DIR
+[--case gpu:80000:6] [--library NEW_DLL --old-library OLD_DLL]` ověří kvalitu
+každého snímku vůči originálu, RMS změny chyby ve stacionárních oblastech
+i po zarovnání pohybu, náhodné seeky a šest explicitních snímků SSIMULACRA2.
+Baseline directory obsahuje gpu-80000.fajkv, gpu-30000.fajkv, cpu-80000.fajkv.
+Volitelné SDK porovnání vyžaduje stejné pixely starého/nového dekodéru nad
+stejným novým souborem. Nezaměňujte šest perceptuálních snímků za hodnocení
+celého videa, ani nižší flicker RMS za záruku nepřítomnosti ghostingu.
+
+Max dovoluje při přeplnění datového limitu jeden hrubší pokus nad stejným
+reziduem. Ukládá transformaci před kvantizací a koeficienty rekonstruuje až
+po přijetí kroku. Hledání pohybu, GPU přípravu ani přenosy neopakuje. Velká
+vzorkovaná chyba prediktoru hrubší pokus vypíná; při neúspěchu následuje
+keyframe. MaximumStep je interní řízení enkodéru, vybraný krok už je součástí
+stávajícího formátu 134/14. Síla Max nevyjadřuje garantovanou RGB chybu.
+Základní křivka v rozsahu síly 0–6 zůstává jemná. Dodatečná úspora se plynule
+přidává v rozsahu 7–12; vyšší agresivní nastavení není automaticky zapnuté
+ani při malém datovém limitu. U 30 kB způsobovala strmější křivka i na síle 6
+nepřiměřenou ztrátu detailů, proto byla pro běžné nastavení odmítnuta.
+
+Aktuální Max s čistšími barvami používá 134/15: potlačí slabé korekce
+v nejjemnějších dvou barevných úrovních a nejjemnějším diagonálním jasu,
+poté uvnitř
+referenční smyčky prostorově vyhladí chroma podle jasových hran. Jas filtruje
+podstatně slaběji. Přesné source-skip bloky se nefiltrovaně zachovají, takže
+se statické části opakovaným filtrováním nerozmazávají. Enkodér i dekodér
+provádějí tutéž celočíselnou rekonstrukci; náhodný seek nesmí měnit výsledek.
+U větších obrazů GPU backend provede celočíselný referenční filtr na GPU;
+přenese pouze zabalené RGBA a malou mapu zachovaných oblastí, bez float rovin.
+GPU musí vrátit přesně stejné bajty jako CPU, včetně záporného zaokrouhlení,
+okrajů, alfy a přesných skip bloků. Malé obrazy a neúspěšné GPU volání použijí
+CPU; neúspěšný pokus nesmí změnit hostitelský obraz.
+Nejde o směšování různých snímků; hrubší kvantizace stále může ztrácet detaily.
+Pod krokem 4 je prostorový filtr identita, mezi kroky 4–15 jeho rozsah klesá;
+nejjemnější reziduum nemá povinnou minimální sílu rozmazání.
+Plynulý firm práh ponechá silné koeficienty beze změny; tvrdé vyřazování čtyř
+barevných úrovní bylo odmítnuto, protože mazalo i skutečné barevné struktury.
+Do rezidua se přenáší jen polovina omezené společné jasové chyby reference;
+nezávislá chyba R/G/B se dále nepřebírá. Úplné přebírání jasové chyby by
+integrovalo novou kvantizační chybu v každém dalším snímku. GPU i CPU používají
+stejnou celočíselnou formuli. Pohybový CPU fallback nyní respektuje vypnutí
+odhadu osvětlení a vyžaduje stejnou robustní podporu společného posunu jako GPU,
+aby lokální změna objektu nezabarvila celý obraz. Starší diagnostické režimy
+si zachovávají vlastní původní pravidla.
+
+`compare_flat_noise.py --before OLD_SNAPSHOTS --after NEW_SNAPSHOTS --output
+RESULTS.json [--frames 1 12 23 47 119 239]` měří jemnou jasovou/barevnou
+chybu v plochách vybraných z originálu společnou maskou RGB rozdílů do 4.
+Chroma RMSE zachycuje i širší barevné odchylky. Tento test snímků nenahrazuje
+celoklipovou kontrolu blikání ani vizuální kontrolu postav v pohybu.
+`--before-suffix intra` porovná přímo baseline obrazy uložené stejným probe;
+v tomto názvu baseline nemusí znamenat samostatně kódované snímky.
+
+motion_quality_probe dekóduje baseline na odděleném stálém vlákně. Dva
+nezávislé soubory tak nevyhazují thread-local referenční cache jeden druhému.
+Požadavky zůstávají sekvenční; staré interleaved časy probe byly zkreslené
+opakovaným dekódováním celých referenčních řetězců. Kvalitativní metriky
+zůstávají stejné; pro výkon používejte samostatné exportní benchmarky.

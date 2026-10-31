@@ -1,7 +1,7 @@
 ﻿param([ValidateSet('Release','Debug')][string]$Configuration='Release', [switch]$Sanitize, [switch]$Quick, [switch]$LinkOptimization, [string[]]$Target=@(), [string]$PackageDirectory="", [ValidatePattern('^[a-zA-Z0-9_-]+$')][string]$NativeBuildDirectory="", [ValidateSet('Full','Iteration')][string]$TestMode='Full', [switch]$NoPublish, [switch]$SkipTests)
 $ErrorActionPreference='Stop'
 $previousBuildTemp=$env:TEMP; $previousBuildTmp=$env:TMP
-$taskBuildTemp=Join-Path $PSScriptRoot 'test-tmp'
+$taskBuildTemp=Join-Path $PSScriptRoot $(if($Sanitize){'test-tmp-asan'}else{'test-tmp'})
 New-Item -ItemType Directory -Force -Path $taskBuildTemp | Out-Null
 $env:TEMP=$taskBuildTemp; $env:TMP=$taskBuildTemp
 try {
@@ -26,6 +26,14 @@ function Invoke-CMake([string[]]$Arguments) {
     $exitCode=$LASTEXITCODE
   } finally { $ErrorActionPreference=$previousPreference }
   if($exitCode){throw "CMake failed with exit code $exitCode."}
+}
+function Get-SourceSha256([string]$Path) {
+  # Child Windows PowerShell processes may inherit a PSModulePath containing
+  # only PowerShell 7 modules. Use .NET directly instead of module autoloading.
+  $stream=[IO.File]::OpenRead($Path)
+  $hash=[Security.Cryptography.SHA256]::Create()
+  try { return [BitConverter]::ToString($hash.ComputeHash($stream)).Replace('-','') }
+  finally { $hash.Dispose(); $stream.Dispose() }
 }
 $out = if($Sanitize){'build-asan'}else{'build-r4'}
 if ($NativeBuildDirectory) { $out=$NativeBuildDirectory }
@@ -56,6 +64,9 @@ if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notco
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_r441_tests') { $Target += 'fajk_r441_tests' }
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_debug_tests') { $Target += 'fajk_debug_tests' }
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_temporal_tests') { $Target += 'fajk_temporal_tests' }
+if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_playback_tests') { $Target += 'fajk_playback_tests' }
+if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_coefficient_temporal_tests') { $Target += 'fajk_coefficient_temporal_tests' }
+if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_motion_temporal_tests') { $Target += 'fajk_motion_temporal_tests' }
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_postfilter_tests') { $Target += 'fajk_postfilter_tests' }
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_gpu_tests') { $Target += 'fajk_gpu_tests' }
 if (!$SkipTests -and $TestMode -eq 'Full' -and $Target.Count -and $Target -notcontains 'fajk_sdk_tests') { $Target += 'fajk_sdk_tests' }
@@ -74,7 +85,7 @@ $sourceFiles=@(Get-ChildItem -LiteralPath "$PSScriptRoot\src","$PSScriptRoot\inc
 $changedSources=0
 foreach($sourceFile in $sourceFiles) {
   $sourceKey=$sourceFile.FullName.Substring($PSScriptRoot.Length+1)
-  $sourceHash=(Get-FileHash -LiteralPath $sourceFile.FullName -Algorithm SHA256).Hash
+  $sourceHash=Get-SourceSha256 $sourceFile.FullName
   $currentHashes[$sourceKey]=$sourceHash
   if($previousHashes[$sourceKey] -ne $sourceHash) { $sourceFile.LastWriteTimeUtc=[DateTime]::UtcNow; ++$changedSources }
 }
@@ -95,12 +106,12 @@ if ($Sanitize) {
 }
 # Keep test transactions in the workspace; redirected sandbox TEMP can reject
 # the atomic rename used by container integration tests.
-$taskTestTemp=Join-Path $PSScriptRoot 'test-tmp'
+$taskTestTemp=$taskBuildTemp
 New-Item -ItemType Directory -Force -Path $taskTestTemp | Out-Null
 $previousTestTemp=$env:TEMP; $previousTestTmp=$env:TMP
 $env:TEMP=$taskTestTemp; $env:TMP=$taskTestTemp
 try {
-  if ($SkipTests) { Write-Host 'Tests skipped at explicit user request.'; $testExit=0 } elseif ($TestMode -eq 'Iteration') {
+  if ($SkipTests) { Write-Host 'Tests skipped by this build invocation.'; $testExit=0 } elseif ($TestMode -eq 'Iteration') {
     & "$PSScriptRoot\$out\fajk_decode_robustness_tests.exe"
     $testExit=$LASTEXITCODE
   } else {

@@ -10,6 +10,7 @@
 #include <random>
 #include <source_location>
 #include <fstream>
+#include <windows.h>
 
 using namespace fajk;
 namespace {
@@ -164,6 +165,30 @@ int wmain(int argc,wchar_t** argv){try{
     for(size_t i=0;i<photo.pixels.size();++i)check(decoded.pixels[i]==std::clamp(int(unfilteredKey.pixels[i])+int(changed.pixels[i])-int(photo.pixels[i]),0,255));
     // Tiny budgets must fall back to a key rather than overrun the packet cap.
     options.targetBytes=20;TemporalEncoder tiny(options,0);check(!tiny.encode(photo,0));check(!tiny.encode(changed,1));
+    {
+        // Exercise the actual conversion boundary: automatic still images
+        // retain 4:4:4, explicit 4:2:0 wins, and GPU worker work is not lost
+        // from progress merely because no compute happened on the caller.
+        MediaRuntime runtime;
+        const auto prefix=std::filesystem::temp_directory_path()/(L"fajk-still-pipeline-"+std::to_wstring(GetCurrentProcessId()));
+        const Path png=prefix.wstring()+L".png",image=prefix.wstring()+L".fajk";
+        writePng(png,photo);ConvertOptions config;config.replace=true;config.workers=2;config.encode=options;config.encode.targetBytes=12000;
+        config.encode.chroma420=true;config.autoChroma=true;
+        auto direct=config.encode;direct.threads=2;direct.chroma420=false;
+        const auto expected444=codec->encode(photo,direct);const auto result=convert(png,image,config,{});
+        check(result.frames==1&&result.gpu.transforms==0);
+        {SequenceReader reader(image);check(reader.read(0).data==expected444.data);}
+        config.autoChroma=false;direct.chroma420=true;const auto expected420=codec->encode(photo,direct);convert(png,image,config,{});
+        {SequenceReader reader(image);check(reader.read(0).data==expected420.data);}
+        if(gpuInfo().available){Frame large{641,449,0,333333,Bytes(pixelBytes(641,449),255)};
+            for(uint32_t y=0;y<large.height;++y)for(uint32_t x=0;x<large.width;++x){const auto at=(size_t(y)*large.width+x)*4;
+                large.pixels[at]=uint8_t(x+y);large.pixels[at+1]=uint8_t(x*3+y/2);large.pixels[at+2]=uint8_t(x/3+y*5);}
+            writePng(png,large);config.encode.backend=ComputeBackend::Gpu;config.encode.targetBytes=400000;config.workers=4;
+            const auto before=gpuActivity();const auto gpuResult=convert(png,image,config,{});const auto after=gpuActivity();
+            check(after.uploadedBytes==before.uploadedBytes&&gpuResult.gpu.uploadedBytes>0);
+        }
+        std::filesystem::remove(png);std::filesystem::remove(image);
+    }
     if(argc==2){
         MediaRuntime runtime;
         const auto path=std::filesystem::temp_directory_path()/L"fajk-temporal-pipeline.fajkv";
@@ -192,8 +217,25 @@ int wmain(int argc,wchar_t** argv){try{
             for(uint64_t n=0;n<32;++n){auto packet=reader.read(n);corrections+=packet.data[4]==temporalCorrectionVersion;codec->decode(packet,reader.info().width,reader.info().height);}
             check(corrections>0);
         }
+        config.similarTolerance=0;config.coefficientTemporal=true;config.keyframeInterval=4;
+        convert(argv[1],path,config,{});
+        {SequenceReader reader(path);check(reader.info().temporal&&reader.info().count==32);
+            for(uint64_t n=0;n<32;++n){const auto packet=reader.read(n);codec->decode(packet,reader.info().width,reader.info().height);}}
         std::filesystem::remove(path);
         std::cout<<"Temporal pipeline: cancellation preserves destination, 256 MiB path, sampling, one-frame compatibility PASS\n";
+        config.coefficientTemporal=false;config.maxCompressionTemporal=true;config.similarTolerance=6;config.maxFrameCount=12;config.memoryMiB=4096;config.workers=10;
+        for(bool overlap:{false,true}){
+            config.overlapMotionPreparation=overlap;
+            const auto result=convert(argv[1],path,config,{});check(result.frames==12&&(!result.preparationWorkers||overlap));
+            {SequenceReader reader(path);check(reader.info().temporalChains&&reader.info().count==12);
+                for(uint64_t n=0;n<12;++n){const auto packet=reader.read(n);const auto decoded=codec->decode(packet,reader.info().width,reader.info().height);check(decoded.pts==packet.pts&&decoded.duration==packet.duration);}}
+            std::filesystem::remove(path);
+        }
+        {std::ofstream existing(path,std::ios::binary);existing<<"preserve Max destination";}
+        std::stop_source maxStop;rejected([&]{convert(argv[1],path,config,maxStop.get_token(),[&](const Progress&){maxStop.request_stop();});});
+        {std::ifstream existing(path,std::ios::binary);std::string contents((std::istreambuf_iterator<char>(existing)),{});check(contents=="preserve Max destination");}
+        std::filesystem::remove(path);
+        std::cout<<"Max pipeline: serial/overlap, ordered frames, closed references, cancellation preserves destination PASS\n";
     }
     std::cout<<"Temporal: exact deltas, bounded error, repeat/age policy, fallback, random seek, guarded output, truncations PASS\n";
     return 0;
