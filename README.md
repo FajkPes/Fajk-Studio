@@ -25,3 +25,8 @@ Fajk Studio is an experimental image and video codec with a Windows encoder, pla
 For technical details, measurements and limitations, see [dev/docs/CURRENT.md](dev/docs/CURRENT.md).
 
 [Detailed documentation](README-DETAILS.md) · [All releases](https://github.com/FajkPes/Fajk-Studio/releases)
+
+## Credits
+
+**Idea, concept and design:** FajkPes  
+**Coding:** ChatGPT Codex, Claude and Google Antigravity
