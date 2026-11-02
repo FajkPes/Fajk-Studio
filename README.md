@@ -26,6 +26,10 @@ For technical details, measurements and limitations, see [dev/docs/CURRENT.md](d
 
 [Detailed documentation](README-DETAILS.md) · [All releases](https://github.com/FajkPes/Fajk-Studio/releases)
 
+## Choosing a video method
+
+The encoder can store frames independently or use inter-frame compression. **Coefficients** recodes independently encoded frame coefficients without changing their decoded pixels. **Regions** reuses similar areas at the same position with a configurable tolerance. **Max compression** is an experimental motion-prediction method: it can save more space, but higher strength can remove detail. These choices are separate from the Fast / More quality encoding-speed modes.
+
 ## Credits
 
 **Idea, concept and design:** FajkPes  
